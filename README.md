@@ -48,7 +48,7 @@
 - **No daemon** — runs in your terminal, nothing runs in the background
 - **No database** — no SQLite, no time-series DB, no logs
 - **No telemetry** — zero network calls, data never leaves your machine
-- **Minimal command use** — core metrics use `/proc`, `/sys`, and `statvfs`; optional local helpers enrich Git, systemd, and PCI labels
+- **Minimal command use** — core metrics use `/proc`, `/sys`, and `statvfs`; optional local helpers enrich systemd and PCI labels
 - **Accountability-first** — every collector reports success or failure per tick
 
 The binary is ~1.5 MB (release) with a configurable TOML config file, keyboard-driven navigation, and panic-safe terminal recovery.
@@ -64,7 +64,7 @@ The binary is ~1.5 MB (release) with a configurable TOML config file, keyboard-d
 - **Tanpa daemon** — berjalan di terminal, tidak ada proses latar
 - **Tanpa database** — tidak pakai SQLite, time-series DB, atau log
 - **Tanpa telemetri** — nol panggilan jaringan, data tidak pernah keluar
-- **Command lokal minimal** — metrik inti memakai `/proc`, `/sys`, dan `statvfs`; helper lokal opsional memperkaya Git, systemd, dan label PCI
+- **Command lokal minimal** — metrik inti memakai `/proc`, `/sys`, dan `statvfs`; helper lokal opsional memperkaya systemd dan label PCI
 - **Akuntabilitas** — setiap kolektor melaporkan sukses/gagal per tick
 
 Binary ~1.5 MB (release), konfigurasi via TOML, navigasi keyboard, dan panic-safe terminal recovery.
@@ -532,7 +532,7 @@ Lazy reads: battery every 5 ticks, thermal every 3 ticks, GPU every 4 ticks, sys
 | Battery | Capacity %, charging status | `/sys/class/power_supply` | Every 5 ticks |
 | Thermal | Temperature in °C | `/sys/class/thermal` (CPU zones preferred, battery zones skipped) | Every 3 ticks |
 | Platform | OS, kernel, hostname, CPU model, environment | `/etc/os-release` (fallback `/usr/lib/os-release`, `/run/host/os-release`), `/proc/sys/kernel/*`, `/proc/cpuinfo` (x86 + ARM layouts) | Once at startup |
-| Local status | Failed units (best-effort), Git dirty count | `systemctl` (skipped when systemd absent), `git status --porcelain` | systemd+ports every 8 ticks, git every 24 ticks with backoff |
+| Local status | Failed units (best-effort) | `systemctl` (skipped when systemd absent) | systemd+ports every 8 ticks |
 
 ---
 

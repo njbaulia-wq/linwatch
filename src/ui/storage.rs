@@ -110,7 +110,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                             .unwrap_or_else(|| String::from("-")),
                     ));
                 }
-                cells.push(Cell::from(truncate(
+                cells.push(Cell::from(truncate_words(
                     &drive.note,
                     if compact_health { 20 } else { 30 },
                 )));

@@ -32,60 +32,6 @@ pub fn read_security_mode() -> String {
     String::from("Disabled")
 }
 
-#[must_use]
-pub fn read_git_modified_count() -> Option<usize> {
-    let mut child = Command::new("git")
-        .args(["status", "--porcelain"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                let mut output = child.stdout.take()?;
-                use std::io::Read;
-                let mut content = String::new();
-                output.read_to_string(&mut content).ok()?;
-                return Some(content.lines().filter(|l| !l.trim().is_empty()).count());
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    return None;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(_) => return None,
-        }
-    }
-}
-
-pub fn read_cpu_vulnerabilities() -> String {
-    let mut vulnerable = 0;
-    let mut mitigated = 0;
-    if let Ok(entries) = fs::read_dir("/sys/devices/system/cpu/vulnerabilities") {
-        for entry in entries.flatten() {
-            if let Ok(content) = fs::read_to_string(entry.path()) {
-                let content_lower = content.to_lowercase();
-                if content_lower.contains("vulnerable") {
-                    vulnerable += 1;
-                } else if content_lower.contains("mitigation")
-                    || content_lower.contains("not affected")
-                {
-                    mitigated += 1;
-                }
-            }
-        }
-    }
-    format!("Vuln: {vulnerable}, Mitigated: {mitigated}")
-}
-
 /// Runtime environment. Containers/WSL share the host kernel, so uptime,
 /// load and network counters there are host-wide — the UI badges this.
 pub fn detect_env() -> EnvKind {
@@ -293,7 +239,6 @@ pub fn read_system_info() -> SystemInfo {
 
     let (cpu_model, cpu_count) = parse_cpuinfo(&cpuinfo);
     let selinux_mode = read_security_mode();
-    let cpu_vulnerabilities = read_cpu_vulnerabilities();
 
     SystemInfo {
         os_name,
@@ -303,7 +248,6 @@ pub fn read_system_info() -> SystemInfo {
         cpu_model,
         cpu_count,
         selinux_mode,
-        cpu_vulnerabilities,
     }
 }
 

@@ -145,13 +145,10 @@ fn render_health_bar_inline(frame: &mut Frame, area: Rect, app: &AppState) {
                 Style::default().fg(theme::get().subtext1),
             ),
         ]),
-        _ => Line::from(vec![
-            severity_chip(Severity::Ok),
-            Span::styled(
-                " All thresholds nominal",
-                Style::default().fg(theme::get().subtext1),
-            ),
-        ]),
+        _ => Line::from(Span::styled(
+            "All thresholds nominal",
+            Style::default().fg(theme::get().subtext1),
+        )),
     };
     frame.render_widget(Paragraph::new(cause_line), chunks[1]);
 }
@@ -253,16 +250,15 @@ fn render_kpi_stat(
         ])
         .split(inner);
 
-    frame.render_widget(
-        Paragraph::new(dim(format!(
-            "{label} · {}",
-            truncate(
-                subtitle,
-                (inner.width as usize).saturating_sub(label.len() + 3)
-            )
-        ))),
-        chunks[0],
-    );
+    // Subtitle only when it fits whole — a cut unit (`GiB` → `G…`)
+    // reads as a different number. Otherwise the bare label wins.
+    let subtitle_line = format!("{label} · {subtitle}");
+    let label_line = if subtitle_line.chars().count() <= inner.width as usize {
+        subtitle_line
+    } else {
+        label.to_string()
+    };
+    frame.render_widget(Paragraph::new(dim(label_line)), chunks[0]);
 
     match value {
         Some(v) => {
@@ -434,7 +430,7 @@ fn render_mini_gauge(
     let sev = Severity::from_usage(value);
 
     // Narrow columns drop the trailing state word; value + bar suffice.
-    let wide = area.width >= 30;
+    let wide = area.width >= 34;
     let mut constraints = vec![
         Constraint::Length(5),
         Constraint::Length(6),
@@ -534,16 +530,16 @@ fn render_detail_gauge(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BODY — charts + resource bars + alerts (full layout)
+// BODY — one bordered frame per column, borderless content inside.
+// Trends | Resources | Status (+ Top CPU on wide screens).
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
     if area.height < 10 {
-        render_alerts_visual(frame, area, app);
+        render_status_column(frame, area, app);
         return;
     }
 
-    // Wide (≥160): four balanced columns — charts get room plus a second
-    // chart column instead of squeezing into 56/22/22.
+    // Wide (≥160): four balanced columns, gauge process bars fit the fourth.
     if area.width >= 160 {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -555,10 +551,13 @@ fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
             ])
             .split(area);
 
-        render_charts(frame, chunks[0], app);
-        render_resource_bars(frame, chunks[1], app);
-        render_alerts_visual(frame, chunks[2], app);
-        render_process_bars(frame, chunks[3], app);
+        render_trends_column(frame, chunks[0], app);
+        render_resources_column(frame, chunks[1], app);
+        render_status_column(frame, chunks[2], app);
+        let top_block = panel_block(" Top CPU ");
+        let top_inner = top_block.inner(chunks[3]);
+        frame.render_widget(top_block, chunks[3]);
+        render_process_bars(frame, top_inner, app);
         return;
     }
 
@@ -572,9 +571,9 @@ fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[1]);
 
-        render_charts(frame, rows[0], app);
-        render_resource_bars(frame, bottom[0], app);
-        render_alerts_visual(frame, bottom[1], app);
+        render_trends_column(frame, rows[0], app);
+        render_resources_column(frame, bottom[0], app);
+        render_status_column(frame, bottom[1], app);
         return;
     }
 
@@ -587,13 +586,45 @@ fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
         ])
         .split(area);
 
-    render_charts(frame, chunks[0], app);
-    render_resource_bars(frame, chunks[1], app);
-    render_alerts_visual(frame, chunks[2], app);
+    render_trends_column(frame, chunks[0], app);
+    render_resources_column(frame, chunks[1], app);
+    render_status_column(frame, chunks[2], app);
+}
+
+fn render_trends_column(frame: &mut Frame, area: Rect, app: &AppState) {
+    let block = panel_block(" Trends ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_charts(frame, inner, app);
+}
+
+fn render_resources_column(frame: &mut Frame, area: Rect, app: &AppState) {
+    let block = panel_block(" Resources ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_resource_bars(frame, inner, app);
+}
+
+fn render_status_column(frame: &mut Frame, area: Rect, app: &AppState) {
+    let block = panel_block_severity(" Status ", alerts_severity(app));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_alerts_visual(frame, inner, app);
+}
+
+fn alerts_severity(app: &AppState) -> Severity {
+    if app.alerts.iter().any(|a| a.starts_with('\u{26a1}')) {
+        Severity::Critical
+    } else if app.alerts.iter().any(|a| a.starts_with('\u{26a0}')) {
+        Severity::Warn
+    } else {
+        Severity::from_health(app.health_score as f64)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHARTS — CPU + GPU are the primary glance targets.
+// CHARTS — CPU + MEM trends. GPU history lives on the GPU tab; duplicating it
+// here next to the GPU KPI sparkline was redundant ink.
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_charts(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
@@ -610,11 +641,10 @@ fn render_charts(frame: &mut Frame, area: Rect, app: &AppState) {
     let cpu_avg = moving_average(&app.cpu_history, 5);
     let cpu_peak = app.cpu_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
     let cpu_title = format!(
-        "CPU {} · AVG {:.0} PEAK {:.0}  {}",
+        "CPU · {} (AVG {:.0}, PEAK {:.0})",
         fmt_pct1(app.cpu_usage),
         cpu_avg,
-        cpu_peak,
-        truncate(&app.system.cpu_model, 20)
+        cpu_peak
     );
     render_chart(
         frame,
@@ -624,29 +654,20 @@ fn render_charts(frame: &mut Frame, area: Rect, app: &AppState) {
         t.accent_teal,
     );
 
-    let gpu = app.primary_gpu();
-    let gpu_usage = gpu.and_then(|g| g.usage_pct).unwrap_or(0.0);
-    let gpu_avg = moving_average(&app.gpu_usage_history, 5);
-    let gpu_peak = app
-        .gpu_usage_history
-        .iter()
-        .map(|(_, v)| *v)
-        .fold(gpu_usage, f64::max);
-    let gpu_name = gpu
-        .map(|g| truncate(&g.model, 22))
-        .unwrap_or_else(|| String::from("No GPU sensor"));
-    let gpu_title = format!(
-        "GPU {} · AVG {:.0} PEAK {:.0}  {gpu_name}",
-        fmt_pct1(gpu_usage),
-        gpu_avg,
-        gpu_peak
+    let mem_avg = moving_average(&app.mem_history, 5);
+    let mem_peak = app.mem_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+    let mem_title = format!(
+        "MEM · {} (AVG {:.0}, PEAK {:.0})",
+        fmt_pct1(app.mem_pct()),
+        mem_avg,
+        mem_peak
     );
     render_chart(
         frame,
         chunks[1],
-        &gpu_title,
-        &app.gpu_usage_history,
-        t.accent_purple,
+        &mem_title,
+        &app.mem_history,
+        t.accent_yellow,
     );
 }
 
@@ -682,11 +703,8 @@ fn render_chart(
     }
 
     let points: Vec<(f64, f64)> = data.iter().copied().collect();
-    let x_start = data.front().map(|p| p.0).unwrap_or(0.0);
-    let x_end = data.back().map(|p| p.0).unwrap_or(1.0).max(x_start + 1.0);
 
     let line_set = ratatui::widgets::Dataset::default()
-        .name("line")
         .marker(ratatui::symbols::Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
@@ -694,18 +712,13 @@ fn render_chart(
 
     let chart = Chart::new(vec![line_set])
         .block(chart_block(title, color))
-        .x_axis(
-            Axis::default()
-                .bounds([x_start, x_end])
-                .style(Style::default().fg(t.overlay1)),
-        )
         .y_axis(
             Axis::default()
                 .bounds([0.0, 100.0])
                 .labels(vec![
-                    Span::styled("0", Style::default().fg(t.overlay1)),
-                    Span::styled("50", Style::default().fg(t.overlay1)),
                     Span::styled("100", Style::default().fg(t.overlay1)),
+                    Span::styled("50", Style::default().fg(t.overlay1)),
+                    Span::styled("0", Style::default().fg(t.overlay1)),
                 ])
                 .style(Style::default().fg(t.overlay1)),
         );
@@ -782,35 +795,37 @@ fn render_compact_wave_chart(
 }
 
 fn chart_block(title: &str, color: ratatui::style::Color) -> Block<'static> {
+    // Borderless: the column frame carries the border, the chart only a title.
+    // Colored titles group each chart with its KPI sparkline hue.
     panel_block("")
         .title(Line::from(vec![Span::styled(
             format!(" {title} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )]))
-        .border_style(Style::default().fg(color))
+        .borders(ratatui::widgets::Borders::NONE)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// RESOURCE BARS — true-percent gauges only. NET (bps) and TEMP (°C) are not
-// percents, so they render as honest text lines, never fake gauges.
+// RESOURCES — true-percent gauges only, then a compact Top CPU text list.
+// Rendered borderless inside the Resources column frame.
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_resource_bars(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
-    let block = panel_block(" System ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
-    if inner.height < 4 {
+    if area.height < 4 {
         return;
     }
 
     // Tall panels get separate NET + TEMP lines; short ones share a line.
-    let tall = inner.height >= 10;
+    let tall = area.height >= 10;
     let rows_len = if tall { 5 } else { 4 };
+    // Reserve a Top CPU section when it fits (header + 3 rows).
+    let rest = area.height.saturating_sub(rows_len);
+    let show_top = rest >= 4;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(rows_len), Constraint::Min(3)])
-        .split(inner);
+        .constraints([Constraint::Length(rows_len), Constraint::Min(0)])
+        .split(area);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -857,7 +872,39 @@ fn render_resource_bars(frame: &mut Frame, area: Rect, app: &AppState) {
         let combined = format!("{net_text} · {temp_text}");
         render_stat_line(frame, rows[3], "", &combined, t.overlay1);
     }
-    render_process_bars(frame, chunks[1], app);
+    if show_top {
+        render_top_processes(frame, chunks[1], app);
+    }
+}
+
+/// Top-3 CPU processes as plain text rows. The Processes tab owns gauges
+/// and interaction; here only names + values earn ink.
+fn render_top_processes(frame: &mut Frame, area: Rect, app: &AppState) {
+    if area.height < 2 || area.width < 12 || app.top_cpu_processes.is_empty() {
+        return;
+    }
+    let mut lines = vec![Line::from(dim("Top CPU"))];
+    let name_w = (area.width as usize).saturating_sub(8).max(4);
+    for process in app.top_cpu_processes.iter().take(3) {
+        let sev = Severity::from_usage(process.cpu_pct);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(
+                    "{:<name_w$} ",
+                    truncate(&process.name, name_w),
+                    name_w = name_w
+                ),
+                Style::default().fg(theme::get().subtext1),
+            ),
+            Span::styled(
+                format!("{:>5.1}%", process.cpu_pct),
+                Style::default()
+                    .fg(severity_color(sev))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_stat_line(
@@ -939,34 +986,15 @@ fn render_process_bars(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ALERTS — visual severity indicators, compact
+// STATUS — failed units, at-risk drives, hot GPU, events, alerts.
+// The primary cause already headlines the verdict bar; repeating it here was
+// the same data twice. Rendered borderless inside the Status column frame.
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
-    let health_sev = Severity::from_health(app.health_score as f64);
     let mut lines: Vec<Line> = Vec::new();
     // Narrow panels show titles only; details would wrap mid-word.
-    let show_detail = area.width >= 32;
-
-    if let Some(cause) = app.root_causes.first() {
-        let cause_sev = cause.severity;
-        let mut spans = vec![
-            severity_chip(cause_sev),
-            Span::styled(
-                format!(" {}", truncate(&cause.title, 14)),
-                Style::default()
-                    .fg(severity_color(cause_sev))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
-        if show_detail {
-            spans.push(Span::styled(
-                format!(" — {}", truncate(&cause.detail, 30)),
-                Style::default().fg(t.text),
-            ));
-        }
-        lines.push(Line::from(spans));
-    }
+    let show_detail = area.width >= 40;
 
     if let Some(unit) = app.failed_units.first() {
         lines.push(Line::from(vec![
@@ -1028,7 +1056,7 @@ fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
         let mut spans = vec![
             severity_chip(event.severity),
             Span::styled(
-                format!(" {}", truncate(&event.title, 14)),
+                format!(" {}", truncate_words(&event.title, 16)),
                 Style::default().fg(severity_color(event.severity)),
             ),
         ];
@@ -1044,6 +1072,8 @@ fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
     let alert_budget = (area.height as usize)
         .saturating_sub(lines.len() + 2)
         .min(3);
+    // Fit the panel, not a magic constant: cut words read as other words.
+    let alert_width = (area.width as usize).saturating_sub(4).max(10);
     for alert in app.alerts.iter().take(alert_budget) {
         let sev = if alert.starts_with('\u{26a1}') {
             Severity::Critical
@@ -1055,29 +1085,13 @@ fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
         lines.push(Line::from(vec![
             severity_chip(sev),
             Span::styled(
-                format!(" {}", truncate(alert, 38)),
+                format!(" {}", truncate_words(alert, alert_width)),
                 Style::default().fg(t.text),
             ),
         ]));
     }
 
-    let border_sev = if app.alerts.iter().any(|a| a.starts_with('\u{26a1}')) {
-        Severity::Critical
-    } else if app.alerts.iter().any(|a| a.starts_with('\u{26a0}')) {
-        Severity::Warn
-    } else {
-        health_sev
-    };
-
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: true }),
-        area.inner(&ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 0,
-        }),
-    );
-    let block = panel_block_severity(" Status ", border_sev);
-    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1125,7 +1139,6 @@ mod tests {
                 cpu_model: String::new(),
                 cpu_count: 1,
                 selinux_mode: String::new(),
-                cpu_vulnerabilities: String::new(),
             },
             env: EnvKind::BareMetal,
             cpu_usage: 45.0,
@@ -1197,8 +1210,6 @@ mod tests {
             process_search: String::new(),
             is_search_mode: false,
             open_ports: Vec::new(),
-            git_modified_files: 0,
-            git_fail_streak: 0,
             zombie_count: 0,
             confirm_kill_pid: None,
             confirm_kill_name: None,

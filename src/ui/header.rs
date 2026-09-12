@@ -45,14 +45,10 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
             app.system.hostname, app.system.os_name, app.system.os_version, app.system.selinux_mode
         )
     };
-    if app.git_modified_files > 0 {
-        meta.push_str(&format!(" | Git: {} modified", app.git_modified_files));
-    }
     if wide {
         meta.push_str(&format!(
-            " | Kernel: {} | {}",
+            " | Kernel: {}",
             common::truncate(&app.system.kernel, 14),
-            app.system.cpu_vulnerabilities
         ));
     }
     if app.env.is_host_scoped() {

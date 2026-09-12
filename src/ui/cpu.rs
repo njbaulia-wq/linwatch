@@ -146,7 +146,6 @@ fn render_chart(
     let x_end = data.back().map(|p| p.0).unwrap_or(1.0).max(x_start + 1.0);
 
     let line_set = ratatui::widgets::Dataset::default()
-        .name("line")
         .marker(ratatui::symbols::Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::default().fg(color).add_modifier(Modifier::BOLD))

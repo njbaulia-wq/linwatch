@@ -132,6 +132,31 @@ pub fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
+/// Truncate at a word boundary when possible so titles never read as
+/// mid-word fragments (`Sample quality…` instead of `Sample qualit…`).
+/// Falls back to hard truncation for single long words.
+pub fn truncate_words(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut end = 0usize;
+    let mut last_space: Option<usize> = None;
+    for (idx, ch) in value.char_indices() {
+        if idx >= max_chars.saturating_sub(1) {
+            break;
+        }
+        if ch.is_whitespace() {
+            last_space = Some(idx);
+        }
+        end = idx + ch.len_utf8();
+    }
+    let cut = last_space.unwrap_or(end);
+    if cut == 0 {
+        return String::from("\u{2026}");
+    }
+    format!("{}\u{2026}", value[..cut].trim_end())
+}
+
 /// Unified responsive breakpoints (validated: ratatui `Percentage` is
 /// relative to total space, so text columns must self-truncate per width).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

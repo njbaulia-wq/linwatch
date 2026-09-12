@@ -67,8 +67,6 @@ pub struct AppState {
     pub process_search: String,
     pub is_search_mode: bool,
     pub open_ports: Vec<OpenPort>,
-    pub git_modified_files: usize,
-    pub git_fail_streak: u8,
     pub zombie_count: usize,
     pub confirm_kill_pid: Option<u32>,
     pub confirm_kill_name: Option<String>,
@@ -166,8 +164,6 @@ impl AppState {
             process_search: String::new(),
             is_search_mode: false,
             open_ports: Vec::new(),
-            git_modified_files: 0,
-            git_fail_streak: 0,
             zombie_count: 0,
             confirm_kill_pid: None,
             confirm_kill_name: None,
@@ -481,22 +477,6 @@ impl AppState {
                 self.failed_units.clear();
             }
             self.open_ports = collector::read_open_ports().unwrap_or_default();
-        }
-        // Forking `git status` is the most expensive poller here, so sample it
-        // 3x less often than systemd/ports (validated: std Command has no
-        // built-in timeout; collector already enforces a 3s try_wait deadline).
-        // After 2 consecutive failures (e.g. outside any repo) back off 5x and
-        // keep the last value instead of forking to learn the same `None`.
-        if git_poll_due(self.tick_count, self.git_fail_streak) {
-            match collector::read_git_modified_count() {
-                Some(count) => {
-                    self.git_modified_files = count;
-                    self.git_fail_streak = 0;
-                }
-                None => {
-                    self.git_fail_streak = self.git_fail_streak.saturating_add(1);
-                }
-            }
         }
         if self.tick_count == 1 || self.tick_count.is_multiple_of(STORAGE_HEALTH_READ_EVERY) {
             self.storage_health = self
@@ -945,19 +925,6 @@ fn calculate_cpu_usage(prev: CpuSample, curr: CpuSample) -> f64 {
     }
 }
 
-/// Whether the expensive `git status` fork is due this tick.
-/// Healthy repos poll every `GIT_READ_EVERY` ticks; after 2 consecutive
-/// failures the interval backs off 5x until a success resets it.
-fn git_poll_due(tick_count: u64, fail_streak: u8) -> bool {
-    if tick_count <= 1 {
-        return true;
-    }
-    if fail_streak < 2 {
-        return tick_count.is_multiple_of(GIT_READ_EVERY);
-    }
-    tick_count.is_multiple_of(GIT_READ_EVERY * 5)
-}
-
 fn push_history(history: &mut VecDeque<(f64, f64)>, counter: u64, value: f64) {
     if history.len() >= HISTORY_LIMIT {
         history.pop_front();
@@ -1320,7 +1287,6 @@ mod tests {
                 cpu_model: String::new(),
                 cpu_count: 1,
                 selinux_mode: String::new(),
-                cpu_vulnerabilities: String::new(),
             },
             env: EnvKind::BareMetal,
             cpu_usage: 0.0,
@@ -1388,8 +1354,6 @@ mod tests {
             process_search: String::new(),
             is_search_mode: false,
             open_ports: Vec::new(),
-            git_modified_files: 0,
-            git_fail_streak: 0,
             zombie_count: 0,
             confirm_kill_pid: None,
             confirm_kill_name: None,
@@ -1786,20 +1750,6 @@ mod tests {
         assert!(!pid_contains(1234, "99"));
         assert!(!pid_contains(1234, "fire"));
         assert!(!pid_contains(12, "12345"));
-    }
-
-    #[test]
-    fn git_poll_backs_off_after_repeated_failures() {
-        // Healthy: every GIT_READ_EVERY ticks (plus first tick).
-        assert!(git_poll_due(1, 0));
-        assert!(git_poll_due(GIT_READ_EVERY, 0));
-        assert!(git_poll_due(GIT_READ_EVERY, 1));
-        assert!(!git_poll_due(GIT_READ_EVERY + 1, 0));
-        // Backed off: only every 5x interval.
-        assert!(!git_poll_due(GIT_READ_EVERY, 2));
-        assert!(!git_poll_due(GIT_READ_EVERY * 2, 5));
-        assert!(git_poll_due(GIT_READ_EVERY * 5, 2));
-        assert!(git_poll_due(GIT_READ_EVERY * 5, 255));
     }
 
     #[test]

@@ -10,8 +10,6 @@ pub const THERMAL_READ_EVERY: u64 = 3;
 pub const SYSTEMD_READ_EVERY: u64 = 8;
 pub const STORAGE_HEALTH_READ_EVERY: u64 = 8;
 pub const GPU_READ_EVERY: u64 = 4;
-/// `git status` forks a child process, so poll it less often than cheap sysfs reads.
-pub const GIT_READ_EVERY: u64 = 24;
 
 pub type NetworkCounters = HashMap<String, (u64, u64)>;
 pub type DiskIoCounters = HashMap<String, (u64, u64)>;
@@ -37,7 +35,6 @@ pub struct SystemInfo {
     pub cpu_model: String,
     pub cpu_count: usize,
     pub selinux_mode: String,
-    pub cpu_vulnerabilities: String,
 }
 
 #[derive(Clone)]

@@ -403,7 +403,6 @@ fn render_history_chart(
         .max(100.0);
 
     let dataset = ratatui::widgets::Dataset::default()
-        .name("line")
         .marker(ratatui::symbols::Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
