@@ -75,6 +75,8 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     if !app.storage_health.is_empty() {
+        // Narrow: drop Warn/Errors numeric columns, keep Device/Kind/Model/Temp/Risk.
+        let compact_health = area.width < 100;
         let health_rows = app
             .storage_health
             .iter()
@@ -85,7 +87,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                     .temp_c
                     .map(|value| format!("{value:.0}\u{b0}C"))
                     .unwrap_or_else(|| String::from("N/A"));
-                Row::new(vec![
+                let mut cells = vec![
                     Cell::from(Span::styled(
                         format!("{} {}", drive.risk.symbol(), drive.device),
                         Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -93,48 +95,57 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                     Cell::from(drive.kind.as_str()),
                     Cell::from(truncate(&drive.model, 18)),
                     Cell::from(temp),
-                    Cell::from(
+                ];
+                if !compact_health {
+                    cells.push(Cell::from(
                         drive
                             .critical_warning
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| String::from("-")),
-                    ),
-                    Cell::from(
+                    ));
+                    cells.push(Cell::from(
                         drive
                             .media_errors
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| String::from("-")),
-                    ),
-                    Cell::from(truncate(&drive.note, 30)),
-                ])
-                .style(Style::default().fg(t.text))
+                    ));
+                }
+                cells.push(Cell::from(truncate(
+                    &drive.note,
+                    if compact_health { 20 } else { 30 },
+                )));
+                Row::new(cells).style(Style::default().fg(t.text))
             })
             .collect::<Vec<_>>();
 
+        let mut health_widths = vec![
+            Constraint::Length(12),
+            Constraint::Length(7),
+            Constraint::Length(19),
+            Constraint::Length(8),
+        ];
+        if !compact_health {
+            health_widths.push(Constraint::Length(7));
+            health_widths.push(Constraint::Length(8));
+        }
+        health_widths.push(Constraint::Min(14));
+        let mut health_header = vec![
+            Cell::from(header_col("Device")),
+            Cell::from(header_col("Kind")),
+            Cell::from(header_col("Model")),
+            Cell::from(header_col("Temp")),
+        ];
+        if !compact_health {
+            health_header.push(Cell::from(header_col("Warn")));
+            health_header.push(Cell::from(header_col("Errors")));
+        }
+        health_header.push(Cell::from(header_col("Risk")));
+
         frame.render_widget(
-            Table::new(
-                health_rows,
-                [
-                    Constraint::Length(12),
-                    Constraint::Length(7),
-                    Constraint::Length(19),
-                    Constraint::Length(8),
-                    Constraint::Length(7),
-                    Constraint::Length(8),
-                    Constraint::Min(14),
-                ],
-            )
-            .header(Row::new(vec![
-                Cell::from(header_col("Device")),
-                Cell::from(header_col("Kind")),
-                Cell::from(header_col("Model")),
-                Cell::from(header_col("Temp")),
-                Cell::from(header_col("Warn")),
-                Cell::from(header_col("Errors")),
-                Cell::from(header_col("Risk")),
-            ]))
-            .block(panel_block("\u{25c6} Storage Health"))
-            .column_spacing(1),
+            Table::new(health_rows, health_widths)
+                .header(Row::new(health_header))
+                .block(panel_block("\u{25c6} Storage Health"))
+                .column_spacing(1),
             chunks[1],
         );
     }
@@ -146,7 +157,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
             let sev = Severity::from_usage(m.pct as f64);
             let color = severity_color(sev);
             Row::new(vec![
-                Cell::from(m.mount_point.as_str()),
+                Cell::from(truncate(&m.mount_point, 24)),
                 Cell::from(Span::styled(
                     format!("{} {:>3}%", sev.symbol(), m.pct),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),

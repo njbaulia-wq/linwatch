@@ -14,19 +14,15 @@ use super::common::*;
 use super::theme;
 
 pub fn overview(frame: &mut Frame, area: Rect, app: &AppState) {
-    let tiny = area.height < 16 || area.width < 64;
-    let small = area.height < 25 || area.width < 100;
-
-    if tiny {
-        render_tiny_layout(frame, area, app);
-    } else if small {
-        render_small_layout(frame, area, app);
-    } else {
-        render_full_layout(frame, area, app);
+    match breakpoint_for_area(area) {
+        Breakpoint::Tiny => render_tiny_layout(frame, area, app),
+        Breakpoint::Compact => render_small_layout(frame, area, app),
+        // Wide reuses the full layout with rebalanced columns (see render_body).
+        Breakpoint::Full | Breakpoint::Wide => render_full_layout(frame, area, app),
     }
 }
 
-// ─── TINY layout (height < 18 or width < 70) ────────────────────────────────
+// ─── TINY layout (width < 64 or height < 16) ─────────────────────────────────
 fn render_tiny_layout(frame: &mut Frame, area: Rect, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -42,7 +38,7 @@ fn render_tiny_layout(frame: &mut Frame, area: Rect, app: &AppState) {
     render_alerts_inline(frame, chunks[2], app);
 }
 
-// ─── SMALL layout (height < 24 or width < 90) ───────────────────────────────
+// ─── SMALL layout (width < 100 or height < 25) ───────────────────────────────
 fn render_small_layout(frame: &mut Frame, area: Rect, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -341,27 +337,54 @@ fn render_kpi_compact_row(frame: &mut Frame, area: Rect, app: &AppState) {
         ])
         .split(area);
 
-    for (i, (label, value, color)) in items.iter().enumerate() {
-        let sev = Severity::from_usage(*value);
-        let block = panel_block_severity(format!(" {label} "), sev);
-        let inner = block.inner(cols[i]);
-        frame.render_widget(block, cols[i]);
-
-        if inner.height < 1 || inner.width < 4 {
-            continue;
+    // Below ~48 cols four gauges side-by-side are unreadable: use a 2x2 grid.
+    if area.width < 48 && area.height >= 7 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+        for (row, pair) in [(rows[0], [0, 1]), (rows[1], [2, 3])].iter() {
+            let pair_cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(*row);
+            for (slot, item_idx) in pair.iter().enumerate() {
+                render_kpi_compact_gauge(frame, pair_cols[slot], items[*item_idx]);
+            }
         }
-
-        let gauge = LineGauge::default()
-            .gauge_style(Style::default().fg(*color).add_modifier(Modifier::BOLD))
-            .ratio(visual_ratio(*value, inner.width))
-            .label(Span::styled(
-                format!("{value:.0}%"),
-                Style::default()
-                    .fg(severity_color(sev))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        frame.render_widget(gauge, inner);
+        return;
     }
+
+    for (i, item) in items.iter().enumerate() {
+        render_kpi_compact_gauge(frame, cols[i], *item);
+    }
+}
+
+fn render_kpi_compact_gauge(
+    frame: &mut Frame,
+    area: Rect,
+    item: (&str, f64, ratatui::style::Color),
+) {
+    let (label, value, color) = item;
+    let sev = Severity::from_usage(value);
+    let block = panel_block_severity(format!(" {label} "), sev);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 1 || inner.width < 4 {
+        return;
+    }
+
+    let gauge = LineGauge::default()
+        .gauge_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+        .ratio(visual_ratio(value, inner.width))
+        .label(Span::styled(
+            format!("{value:.0}%"),
+            Style::default()
+                .fg(severity_color(sev))
+                .add_modifier(Modifier::BOLD),
+        ));
+    frame.render_widget(gauge, inner);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -373,7 +396,7 @@ fn render_pressure_row(frame: &mut Frame, area: Rect, app: &AppState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.height < 1 {
+    if inner.height < 3 {
         return;
     }
 
@@ -507,6 +530,26 @@ fn render_detail_gauge(
 fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
     if area.height < 10 {
         render_alerts_visual(frame, area, app);
+        return;
+    }
+
+    // Wide (≥160): four balanced columns — charts get room plus a second
+    // chart column instead of squeezing into 56/22/22.
+    if area.width >= 160 {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(46),
+                Constraint::Percentage(20),
+                Constraint::Percentage(17),
+                Constraint::Percentage(17),
+            ])
+            .split(area);
+
+        render_charts(frame, chunks[0], app);
+        render_resource_bars(frame, chunks[1], app);
+        render_alerts_visual(frame, chunks[2], app);
+        render_process_bars(frame, chunks[3], app);
         return;
     }
 
@@ -1095,6 +1138,7 @@ mod tests {
                 selinux_mode: String::new(),
                 cpu_vulnerabilities: String::new(),
             },
+            env: EnvKind::BareMetal,
             cpu_usage: 45.0,
             core_usages: vec![40.0, 50.0],
             cpu_history: VecDeque::from([(0.0, 40.0), (1.0, 45.0), (2.0, 50.0)]),
@@ -1165,6 +1209,7 @@ mod tests {
             is_search_mode: false,
             open_ports: Vec::new(),
             git_modified_files: 0,
+            git_fail_streak: 0,
             zombie_count: 0,
             confirm_kill_pid: None,
             confirm_kill_name: None,
@@ -1181,7 +1226,15 @@ mod tests {
     #[test]
     fn overview_renders_at_common_sizes() {
         use ratatui::{backend::TestBackend, Terminal};
-        for (w, h) in [(60, 15), (80, 24), (100, 30), (120, 40), (160, 48)] {
+        for (w, h) in [
+            (60, 15),
+            (70, 18),
+            (80, 24),
+            (100, 30),
+            (120, 40),
+            (160, 48),
+            (180, 50),
+        ] {
             let backend = TestBackend::new(w, h);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut app = make_app();

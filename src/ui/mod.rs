@@ -17,8 +17,8 @@ use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Span,
-    widgets::{Block, Tabs},
+    text::{Line, Span},
+    widgets::{Block, Paragraph, Tabs},
     Frame,
 };
 use std::time::Instant;
@@ -170,6 +170,36 @@ fn ui(frame: &mut Frame, app: &AppState, process_table_state: &mut ratatui::widg
     let shell = Block::default().style(Style::default().bg(t.bg_dark));
     frame.render_widget(shell, root);
 
+    // Minimum-size gate: below this nothing tab-specific can render sanely.
+    if root.width < common::MIN_WIDTH || root.height < common::MIN_HEIGHT {
+        let msg = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "Terminal too small",
+                Style::default()
+                    .fg(t.accent_red)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "Need at least {}x{} (now {}x{})",
+                    common::MIN_WIDTH,
+                    common::MIN_HEIGHT,
+                    root.width,
+                    root.height
+                ),
+                Style::default().fg(t.subtext1),
+            )),
+        ])
+        .block(common::panel_block(" LinWatch "))
+        .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(msg, root);
+        if app.show_help {
+            help::help(frame, root);
+        }
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -192,10 +222,18 @@ fn ui(frame: &mut Frame, app: &AppState, process_table_state: &mut ratatui::widg
 
 fn render_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
+    // Compact tab labels on narrow terminals so all 7 tabs stay visible.
     let titles: Vec<Span> = ViewTab::all()
         .iter()
-        .map(|tab| {
-            let label = format!(" {} {} ", tab.icon(), tab.label());
+        .enumerate()
+        .map(|(i, tab)| {
+            let label = if area.width < 64 {
+                format!(" {} ", tab.icon())
+            } else if area.width < 96 {
+                format!("{} {}", i + 1, short_tab_label(tab))
+            } else {
+                format!(" {} {} ", tab.icon(), tab.label())
+            };
             Span::raw(label)
         })
         .collect();
@@ -212,6 +250,18 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
         .divider(Span::raw(" "));
 
     frame.render_widget(tabs, area);
+}
+
+fn short_tab_label(tab: &ViewTab) -> &'static str {
+    match tab {
+        ViewTab::Overview => "Over",
+        ViewTab::Cpu => "CPU",
+        ViewTab::Gpu => "GPU",
+        ViewTab::Memory => "Mem",
+        ViewTab::Storage => "Disk",
+        ViewTab::Network => "Net",
+        ViewTab::Processes => "Proc",
+    }
 }
 
 fn render_tab_content(
@@ -240,7 +290,17 @@ mod tests {
 
     #[test]
     fn renders_all_tabs_across_common_terminal_sizes() {
-        for (width, height) in [(80, 24), (100, 30), (120, 40), (160, 48)] {
+        for (width, height) in [
+            (60, 15),
+            (70, 18),
+            (80, 20),
+            (80, 24),
+            (100, 28),
+            (100, 30),
+            (120, 40),
+            (160, 48),
+            (180, 50),
+        ] {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).expect("test backend");
             let mut app = AppState::new(AppConfig::default());

@@ -44,10 +44,20 @@ pub fn memory_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         t.accent_purple,
     );
 
-    let detail_area = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
+    // Narrow: stack details above the trend chart instead of squeezing 50/50.
+    let (detail_panel, chart_panel) = if area.width < 80 {
+        let stacked = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(7), Constraint::Min(6)])
+            .split(chunks[1]);
+        (stacked[0], stacked[1])
+    } else {
+        let side = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[1]);
+        (side[0], side[1])
+    };
 
     let details = vec![
         Line::from(vec![
@@ -76,17 +86,22 @@ pub fn memory_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         ]),
         Line::from(vec![
             styled("\u{2603} Temp: ", t.overlay0),
-            styled(format!("{:.1}\u{b0}C", app.temp_c.unwrap_or(0.0)), t.text),
+            styled(
+                app.temp_c
+                    .map(|temp| format!("{temp:.1}\u{b0}C"))
+                    .unwrap_or_else(|| String::from("N/A")),
+                t.text,
+            ),
         ]),
     ];
     frame.render_widget(
         Paragraph::new(details).block(panel_block("\u{25a3} Memory Details")),
-        detail_area[0],
+        detail_panel,
     );
 
     render_chart(
         frame,
-        detail_area[1],
+        chart_panel,
         "\u{25a3} Memory Trend (120s)",
         &app.mem_history,
         t.accent_yellow,

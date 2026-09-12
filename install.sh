@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="digitalninjanv/linwatch"
+REPO="njbaulia-wq/linwatch"
 BIN="linwatch"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 TMP_DIR="$(mktemp -d)"

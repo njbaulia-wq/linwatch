@@ -6,6 +6,7 @@ use crate::types::*;
 
 pub struct AppState {
     pub system: SystemInfo,
+    pub env: EnvKind,
     pub cpu_usage: f64,
     pub core_usages: Vec<f64>,
     pub cpu_history: VecDeque<(f64, f64)>,
@@ -67,6 +68,7 @@ pub struct AppState {
     pub is_search_mode: bool,
     pub open_ports: Vec<OpenPort>,
     pub git_modified_files: usize,
+    pub git_fail_streak: u8,
     pub zombie_count: usize,
     pub confirm_kill_pid: Option<u32>,
     pub confirm_kill_name: Option<String>,
@@ -94,6 +96,7 @@ impl AppState {
 
         let mut state = Self {
             system: collector::read_system_info(),
+            env: collector::detect_env(),
             cpu_usage: 0.0,
             core_usages: Vec::new(),
             cpu_history: VecDeque::with_capacity(HISTORY_LIMIT),
@@ -164,6 +167,7 @@ impl AppState {
             is_search_mode: false,
             open_ports: Vec::new(),
             git_modified_files: 0,
+            git_fail_streak: 0,
             zombie_count: 0,
             confirm_kill_pid: None,
             confirm_kill_name: None,
@@ -246,6 +250,23 @@ impl AppState {
             root_causes: self.root_causes.clone(),
             recent_events: self.events.iter().rev().take(20).cloned().collect(),
             sample_status: self.sample_status().to_string(),
+            environment: self.env.label().to_string(),
+            security_mode: self.system.selinux_mode.clone(),
+        }
+    }
+
+    pub fn platform_summary(&self) -> String {
+        if self.env.is_host_scoped() {
+            format!(
+                "{} ({} scope: host)",
+                self.env.label(),
+                match self.env {
+                    EnvKind::Container => "ctr",
+                    _ => "wsl",
+                }
+            )
+        } else {
+            self.env.label().to_string()
         }
     }
 
@@ -315,22 +336,39 @@ impl AppState {
 
     pub fn filtered_processes(&self) -> Vec<&ProcessInfo> {
         let mut procs: Vec<&ProcessInfo> = match self.process_sort {
-            ProcessSort::CpuDesc | ProcessSort::CpuAsc => self.top_cpu_processes.iter().collect(),
-            ProcessSort::MemDesc | ProcessSort::MemAsc => self.top_mem_processes.iter().collect(),
+            ProcessSort::CpuDesc | ProcessSort::CpuAsc => {
+                let mut v = Vec::with_capacity(self.top_cpu_processes.len());
+                v.extend(self.top_cpu_processes.iter());
+                v
+            }
+            ProcessSort::MemDesc | ProcessSort::MemAsc => {
+                let mut v = Vec::with_capacity(self.top_mem_processes.len());
+                v.extend(self.top_mem_processes.iter());
+                v
+            }
             ProcessSort::PidAsc | ProcessSort::PidDesc => {
-                let mut seen = HashSet::new();
-                self.top_cpu_processes
-                    .iter()
-                    .chain(self.top_mem_processes.iter())
-                    .filter(|p| seen.insert(p.pid))
-                    .collect()
+                let mut seen = HashSet::with_capacity(
+                    self.top_cpu_processes.len() + self.top_mem_processes.len(),
+                );
+                let mut v = Vec::with_capacity(seen.capacity());
+                v.extend(
+                    self.top_cpu_processes
+                        .iter()
+                        .chain(self.top_mem_processes.iter())
+                        .filter(|p| seen.insert(p.pid)),
+                );
+                v
             }
         };
 
         if !self.process_search.is_empty() {
+            // Lowercase the query once; match per-process without allocating
+            // a new String for every name/pid (hot path: called every frame).
             let search = self.process_search.to_lowercase();
+            let search_lower = search.as_str();
             procs.retain(|p| {
-                p.name.to_lowercase().contains(&search) || p.pid.to_string().contains(&search)
+                contains_case_insensitive(&p.name, search_lower)
+                    || pid_contains(p.pid, search_lower)
             });
         }
         match self.process_sort {
@@ -391,7 +429,9 @@ impl AppState {
         push_history(&mut self.mem_history, self.counter, mem_pct_val);
 
         if let Some(mounts) = self.capture("disk", collector::read_disk_info()) {
-            self.disk = mounts.first().cloned().unwrap_or_else(empty_disk_info);
+            self.disk = collector::primary_mount(&mounts)
+                .cloned()
+                .unwrap_or_else(empty_disk_info);
             self.mounts = mounts;
         }
 
@@ -431,11 +471,32 @@ impl AppState {
             }
         }
         if self.tick_count == 1 || self.tick_count.is_multiple_of(SYSTEMD_READ_EVERY) {
-            self.failed_units = self
-                .capture("systemd", collector::read_systemd_failed_units(5))
-                .unwrap_or_default();
+            // Best-effort: absence of systemd (Alpine/OpenRC, containers,
+            // WSL1) means "skip", never a per-tick sample failure.
+            if collector::has_systemd() {
+                self.failed_units = self
+                    .capture("systemd", collector::read_systemd_failed_units(5))
+                    .unwrap_or_default();
+            } else {
+                self.failed_units.clear();
+            }
             self.open_ports = collector::read_open_ports().unwrap_or_default();
-            self.git_modified_files = collector::read_git_modified_count().unwrap_or(0);
+        }
+        // Forking `git status` is the most expensive poller here, so sample it
+        // 3x less often than systemd/ports (validated: std Command has no
+        // built-in timeout; collector already enforces a 3s try_wait deadline).
+        // After 2 consecutive failures (e.g. outside any repo) back off 5x and
+        // keep the last value instead of forking to learn the same `None`.
+        if git_poll_due(self.tick_count, self.git_fail_streak) {
+            match collector::read_git_modified_count() {
+                Some(count) => {
+                    self.git_modified_files = count;
+                    self.git_fail_streak = 0;
+                }
+                None => {
+                    self.git_fail_streak = self.git_fail_streak.saturating_add(1);
+                }
+            }
         }
         if self.tick_count == 1 || self.tick_count.is_multiple_of(STORAGE_HEALTH_READ_EVERY) {
             self.storage_health = self
@@ -470,7 +531,11 @@ impl AppState {
             }
 
             self.sort_and_truncate_processes(&mut summary.top_cpu, &mut summary.top_mem, 10);
-            self.previous_process_totals = summary.current_totals;
+            // Reuse the previous map's allocation instead of dropping it every
+            // tick (validated: HashMap::clear retains capacity for reuse).
+            self.previous_process_totals.clear();
+            self.previous_process_totals
+                .extend(summary.current_totals.drain());
         }
 
         // Proactively evict sparkline history for PIDs no longer in any top list.
@@ -880,11 +945,87 @@ fn calculate_cpu_usage(prev: CpuSample, curr: CpuSample) -> f64 {
     }
 }
 
+/// Whether the expensive `git status` fork is due this tick.
+/// Healthy repos poll every `GIT_READ_EVERY` ticks; after 2 consecutive
+/// failures the interval backs off 5x until a success resets it.
+fn git_poll_due(tick_count: u64, fail_streak: u8) -> bool {
+    if tick_count <= 1 {
+        return true;
+    }
+    if fail_streak < 2 {
+        return tick_count.is_multiple_of(GIT_READ_EVERY);
+    }
+    tick_count.is_multiple_of(GIT_READ_EVERY * 5)
+}
+
 fn push_history(history: &mut VecDeque<(f64, f64)>, counter: u64, value: f64) {
     if history.len() >= HISTORY_LIMIT {
         history.pop_front();
     }
     history.push_back((counter as f64, value));
+}
+
+/// ASCII fast-path substring search against an already-lowercased needle.
+/// Avoids `haystack.to_lowercase()` (one heap alloc per process per frame).
+fn contains_case_insensitive(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle_lower.len() {
+        return false;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let h = haystack.as_bytes();
+        let n = needle_lower.as_bytes();
+        return h.len() >= n.len()
+            && (0..=(h.len() - n.len())).any(|i| {
+                h[i..i + n.len()]
+                    .iter()
+                    .zip(n.iter())
+                    .all(|(a, b)| a.to_ascii_lowercase() == *b)
+            });
+    }
+    haystack.to_lowercase().contains(needle_lower)
+}
+
+/// Decimal substring check for PIDs without `pid.to_string()` allocation.
+fn pid_contains(pid: u32, needle: &str) -> bool {
+    if needle.is_empty() || !needle.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    if needle.len() > 10 {
+        return false;
+    }
+    let needle_val: u32 = match needle.parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    // Exact match is the common case (`/1234`); substring fallback via
+    // fixed stack buffer instead of a heap String.
+    if pid == needle_val {
+        return true;
+    }
+    let mut buf = [0u8; 10];
+    let mut v = pid;
+    let len: usize = if v == 0 {
+        buf[0] = b'0';
+        1
+    } else {
+        let mut tmp = [0u8; 10];
+        let mut n = 0;
+        while v > 0 {
+            tmp[n] = b'0' + (v % 10) as u8;
+            v /= 10;
+            n += 1;
+        }
+        for i in 0..n {
+            buf[i] = tmp[n - 1 - i];
+        }
+        n
+    };
+    let hay = &buf[..len];
+    let nd = needle.as_bytes();
+    hay.len() >= nd.len() && (0..=(hay.len() - nd.len())).any(|i| &hay[i..i + nd.len()] == nd)
 }
 
 fn normalize_rate(value: f64) -> f64 {
@@ -1181,6 +1322,7 @@ mod tests {
                 selinux_mode: String::new(),
                 cpu_vulnerabilities: String::new(),
             },
+            env: EnvKind::BareMetal,
             cpu_usage: 0.0,
             core_usages: Vec::new(),
             cpu_history: VecDeque::new(),
@@ -1247,6 +1389,7 @@ mod tests {
             is_search_mode: false,
             open_ports: Vec::new(),
             git_modified_files: 0,
+            git_fail_streak: 0,
             zombie_count: 0,
             confirm_kill_pid: None,
             confirm_kill_name: None,
@@ -1607,6 +1750,56 @@ mod tests {
         assert_eq!(app.sample_status(), "Partial");
         app.degraded_sources.push("disk".into());
         assert_eq!(app.sample_status(), "Degraded");
+    }
+
+    #[test]
+    fn platform_summary_marks_host_scoped_envs() {
+        let mut app = bare_state();
+        app.env = EnvKind::Container;
+        assert!(
+            app.platform_summary().contains("host"),
+            "{}",
+            app.platform_summary()
+        );
+        app.env = EnvKind::Wsl;
+        assert!(
+            app.platform_summary().contains("host"),
+            "{}",
+            app.platform_summary()
+        );
+        app.env = EnvKind::BareMetal;
+        assert!(!app.platform_summary().contains("host"));
+        assert_eq!(EnvKind::Container.badge(), "CTR");
+    }
+
+    #[test]
+    fn search_matches_case_insensitively() {
+        assert!(contains_case_insensitive("Firefox", "fire"));
+        assert!(contains_case_insensitive("FIREFOX-ESR", "firefox"));
+        assert!(!contains_case_insensitive("bash", "fire"));
+    }
+
+    #[test]
+    fn pid_contains_matches_without_allocation() {
+        assert!(pid_contains(1234, "23"));
+        assert!(pid_contains(1234, "1234"));
+        assert!(!pid_contains(1234, "99"));
+        assert!(!pid_contains(1234, "fire"));
+        assert!(!pid_contains(12, "12345"));
+    }
+
+    #[test]
+    fn git_poll_backs_off_after_repeated_failures() {
+        // Healthy: every GIT_READ_EVERY ticks (plus first tick).
+        assert!(git_poll_due(1, 0));
+        assert!(git_poll_due(GIT_READ_EVERY, 0));
+        assert!(git_poll_due(GIT_READ_EVERY, 1));
+        assert!(!git_poll_due(GIT_READ_EVERY + 1, 0));
+        // Backed off: only every 5x interval.
+        assert!(!git_poll_due(GIT_READ_EVERY, 2));
+        assert!(!git_poll_due(GIT_READ_EVERY * 2, 5));
+        assert!(git_poll_due(GIT_READ_EVERY * 5, 2));
+        assert!(git_poll_due(GIT_READ_EVERY * 5, 255));
     }
 
     #[test]

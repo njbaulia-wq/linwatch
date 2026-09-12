@@ -80,6 +80,39 @@ pub fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
+/// Unified responsive breakpoints (validated: ratatui `Percentage` is
+/// relative to total space, so text columns must self-truncate per width).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Breakpoint {
+    /// <64 cols or <16 rows: essentials only.
+    Tiny,
+    /// <100 cols or <25 rows: compact rows, reduced columns.
+    Compact,
+    /// Standard desktop terminal.
+    Full,
+    /// ≥160 cols: extra columns/panels allowed.
+    Wide,
+}
+
+pub const MIN_WIDTH: u16 = 60;
+pub const MIN_HEIGHT: u16 = 15;
+
+pub fn breakpoint(width: u16, height: u16) -> Breakpoint {
+    if width < 64 || height < 16 {
+        Breakpoint::Tiny
+    } else if width < 100 || height < 25 {
+        Breakpoint::Compact
+    } else if width >= 160 {
+        Breakpoint::Wide
+    } else {
+        Breakpoint::Full
+    }
+}
+
+pub fn breakpoint_for_area(area: Rect) -> Breakpoint {
+    breakpoint(area.width, area.height)
+}
+
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     use ratatui::layout::{Constraint, Direction, Layout};
 
@@ -123,4 +156,25 @@ pub fn header_col(text: &str) -> Span<'static> {
             .fg(theme::get().overlay1)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn breakpoints_cover_all_sizes() {
+        assert_eq!(breakpoint(50, 40), Breakpoint::Tiny);
+        assert_eq!(breakpoint(120, 10), Breakpoint::Tiny);
+        assert_eq!(breakpoint(80, 24), Breakpoint::Compact);
+        assert_eq!(breakpoint(120, 20), Breakpoint::Compact);
+        assert_eq!(breakpoint(120, 40), Breakpoint::Full);
+        assert_eq!(breakpoint(159, 40), Breakpoint::Full);
+        assert_eq!(breakpoint(160, 40), Breakpoint::Wide);
+        assert_eq!(breakpoint(200, 60), Breakpoint::Wide);
+        // Compact never outranks Tiny, Wide only by width at Full height.
+        assert!(Breakpoint::Tiny < Breakpoint::Compact);
+        assert!(Breakpoint::Compact < Breakpoint::Full);
+        assert!(Breakpoint::Full < Breakpoint::Wide);
+    }
 }

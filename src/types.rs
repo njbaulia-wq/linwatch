@@ -10,6 +10,8 @@ pub const THERMAL_READ_EVERY: u64 = 3;
 pub const SYSTEMD_READ_EVERY: u64 = 8;
 pub const STORAGE_HEALTH_READ_EVERY: u64 = 8;
 pub const GPU_READ_EVERY: u64 = 4;
+/// `git status` forks a child process, so poll it less often than cheap sysfs reads.
+pub const GIT_READ_EVERY: u64 = 24;
 
 pub type NetworkCounters = HashMap<String, (u64, u64)>;
 pub type DiskIoCounters = HashMap<String, (u64, u64)>;
@@ -151,6 +153,41 @@ pub struct StorageHealth {
     pub media_errors: Option<u64>,
     pub risk: Severity,
     pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnvKind {
+    #[default]
+    BareMetal,
+    VirtualMachine,
+    Container,
+    Wsl,
+}
+
+impl EnvKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            EnvKind::BareMetal => "Bare metal",
+            EnvKind::VirtualMachine => "VM",
+            EnvKind::Container => "Container",
+            EnvKind::Wsl => "WSL",
+        }
+    }
+
+    /// Short badge for narrow headers.
+    pub fn badge(&self) -> &'static str {
+        match self {
+            EnvKind::BareMetal => "HW",
+            EnvKind::VirtualMachine => "VM",
+            EnvKind::Container => "CTR",
+            EnvKind::Wsl => "WSL",
+        }
+    }
+
+    /// Whether uptime/load/net counters describe the host, not us.
+    pub fn is_host_scoped(&self) -> bool {
+        matches!(self, EnvKind::Container | EnvKind::Wsl)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -331,6 +368,8 @@ pub struct MonitorSnapshot {
     pub root_causes: Vec<RootCause>,
     pub recent_events: Vec<MonitorEvent>,
     pub sample_status: String,
+    pub environment: String,
+    pub security_mode: String,
 }
 
 /// Severity level used for color + symbol cues (accessibility-friendly).

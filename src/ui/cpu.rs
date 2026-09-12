@@ -32,7 +32,7 @@ pub fn cpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
 
     let info_line = Line::from(vec![
         Span::styled(
-            format!("\u{2699} {}  ", app.system.cpu_model),
+            format!("\u{2699} {}  ", truncate(&app.system.cpu_model, 32)),
             Style::default().fg(t.text),
         ),
         Span::styled(
@@ -56,18 +56,14 @@ pub fn cpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         horizontal: 2,
         vertical: 1,
     });
-    let cores_to_show = app
-        .core_usages
-        .len()
-        .min((bar_area.height as usize) / 2 * 2)
-        .max(1);
-    let bar_height = if cores_to_show > 0 {
-        bar_area.height / cores_to_show as u16
+    if bar_area.height == 0 || bar_area.width < 12 {
+        // Too small for gauges: the trend chart below still carries the signal.
     } else {
-        1
-    };
+        let total_cores = app.core_usages.len();
+        let cores_to_show = total_cores.min((bar_area.height as usize) / 2 * 2).max(1);
+        let hidden = total_cores.saturating_sub(cores_to_show);
+        let bar_height = (bar_area.height / cores_to_show.max(1) as u16).max(1);
 
-    if cores_to_show > 0 {
         let bars = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
@@ -80,9 +76,14 @@ pub fn cpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         for (i, &usage) in app.core_usages.iter().enumerate().take(bars.len()) {
             let sev = Severity::from_usage(usage);
             let color = severity_color(sev);
+            let more = if hidden > 0 && i + 1 == bars.len() {
+                format!(" (+{hidden} more)")
+            } else {
+                String::new()
+            };
             let gauge = LineGauge::default()
                 .block(ratatui::widgets::Block::default().title(format!(
-                    "{} Core {i} {:>5.1}%",
+                    "{} Core {i} {:>5.1}%{more}",
                     sev.symbol(),
                     usage
                 )))

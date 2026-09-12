@@ -66,10 +66,20 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         t.accent_orange,
     );
 
-    let bottom_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[2]);
+    let bottom_chunks = if area.width < 90 {
+        // Narrow: stack interface and port tables vertically.
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[2])
+            .to_vec()
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[2])
+            .to_vec()
+    };
 
     let iface_rows = app
         .interfaces
@@ -134,9 +144,43 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         })
         .collect::<Vec<_>>();
 
+    // Narrow: drop Service/State columns so Proto/IP/Port always fit.
+    let compact_ports = area.width < 100;
+
     if port_rows.is_empty() {
         frame.render_widget(
             Paragraph::new("No active open ports detected").block(panel_block("🔓 Open Ports")),
+            bottom_chunks[1],
+        );
+    } else if compact_ports {
+        let compact_rows = app
+            .open_ports
+            .iter()
+            .map(|p| {
+                Row::new(vec![
+                    Cell::from(p.proto.as_str()),
+                    Cell::from(p.ip.as_str()),
+                    Cell::from(p.port.to_string()),
+                ])
+                .style(Style::default().fg(t.text))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Table::new(
+                compact_rows,
+                [
+                    Constraint::Length(6),
+                    Constraint::Min(13),
+                    Constraint::Length(6),
+                ],
+            )
+            .header(Row::new(vec![
+                Cell::from(header_col("Proto")),
+                Cell::from(header_col("IP Address")),
+                Cell::from(header_col("Port")),
+            ]))
+            .block(panel_block("🔓 Open Ports"))
+            .column_spacing(1),
             bottom_chunks[1],
         );
     } else {

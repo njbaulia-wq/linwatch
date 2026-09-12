@@ -7,8 +7,8 @@ readme = "README.md"
 keywords = ["linux", "monitor", "tui", "observability", "ratatui"]
 categories = ["command-line-utilities"]
 license = "MIT"
-repository = "https://github.com/digitalninjanv/linwatch"
-homepage = "https://github.com/digitalninjanv/linwatch"
+repository = "https://github.com/njbaulia-wq/linwatch"
+homepage = "https://github.com/njbaulia-wq/linwatch"
 
 [dependencies]
 ratatui = "0.26"

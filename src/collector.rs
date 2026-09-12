@@ -13,16 +13,23 @@ pub fn read_trimmed(path: &str) -> Option<String> {
         .map(|value| value.trim().to_string())
 }
 
-pub fn read_selinux_mode() -> String {
+/// Security-module status across distros: SELinux enforcing/permissive,
+/// AppArmor on Debian/Ubuntu family, otherwise Disabled.
+pub fn read_security_mode() -> String {
     if let Ok(content) = fs::read_to_string("/sys/fs/selinux/enforce") {
         match content.trim() {
-            "1" => String::from("Enforcing"),
-            "0" => String::from("Permissive"),
-            _ => String::from("Unknown"),
+            "1" => return String::from("Enforcing"),
+            "0" => return String::from("Permissive"),
+            _ => return String::from("Unknown"),
         }
-    } else {
-        String::from("Disabled")
     }
+    if Path::new("/sys/kernel/security/apparmor").exists()
+        || fs::read_to_string("/sys/module/apparmor/parameters/enabled")
+            .is_ok_and(|v| v.trim().starts_with('Y'))
+    {
+        return String::from("AppArmor");
+    }
+    String::from("Disabled")
 }
 
 #[must_use]
@@ -79,6 +86,83 @@ pub fn read_cpu_vulnerabilities() -> String {
     format!("Vuln: {vulnerable}, Mitigated: {mitigated}")
 }
 
+/// Runtime environment. Containers/WSL share the host kernel, so uptime,
+/// load and network counters there are host-wide — the UI badges this.
+pub fn detect_env() -> EnvKind {
+    let version = fs::read_to_string("/proc/version").unwrap_or_default();
+    let version_lower = version.to_ascii_lowercase();
+    if version_lower.contains("microsoft") || version_lower.contains("wsl") {
+        return EnvKind::Wsl;
+    }
+    if read_trimmed("/proc/sys/kernel/osrelease")
+        .is_some_and(|k| k.to_ascii_lowercase().contains("microsoft"))
+    {
+        return EnvKind::Wsl;
+    }
+    if Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists() {
+        return EnvKind::Container;
+    }
+    if let Ok(cgroup) = fs::read_to_string("/proc/1/cgroup") {
+        if cgroup.contains("docker")
+            || cgroup.contains("kubepods")
+            || cgroup.contains("lxc")
+            || cgroup.contains("containerd")
+        {
+            return EnvKind::Container;
+        }
+    }
+    if is_virtual_machine(&version) {
+        return EnvKind::VirtualMachine;
+    }
+    EnvKind::BareMetal
+}
+
+fn is_virtual_machine(proc_version: &str) -> bool {
+    if proc_version.contains("hypervisor") {
+        return true;
+    }
+    for path in [
+        "/sys/class/dmi/id/product_name",
+        "/sys/class/dmi/id/sys_vendor",
+    ] {
+        if let Ok(value) = fs::read_to_string(path) {
+            let lower = value.to_ascii_lowercase();
+            if [
+                "kvm",
+                "qemu",
+                "virtualbox",
+                "vmware",
+                "xen",
+                "hyper-v",
+                "parallels",
+                "bhyve",
+            ]
+            .iter()
+            .any(|sig| lower.contains(sig))
+            {
+                return true;
+            }
+        }
+    }
+    fs::read_to_string("/proc/cpuinfo").is_ok_and(|cpuinfo| cpuinfo.contains("hypervisor"))
+}
+
+/// Whether systemd is usable here. Cached: absence means "skip polling",
+/// not a per-tick failure (Alpine/OpenRC, containers, WSL1).
+pub fn has_systemd() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        Path::new("/run/systemd/system").exists()
+            && Command::new("systemctl")
+                .args(["--version"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+    })
+}
+
 #[must_use]
 pub fn read_open_ports() -> Option<Vec<OpenPort>> {
     let mut ports = Vec::new();
@@ -87,6 +171,12 @@ pub fn read_open_ports() -> Option<Vec<OpenPort>> {
     }
     if let Ok(content) = fs::read_to_string("/proc/net/udp") {
         parse_socket_file(&content, "UDP", &mut ports);
+    }
+    if let Ok(content) = fs::read_to_string("/proc/net/tcp6") {
+        parse_socket_file(&content, "TCP6", &mut ports);
+    }
+    if let Ok(content) = fs::read_to_string("/proc/net/udp6") {
+        parse_socket_file(&content, "UDP6", &mut ports);
     }
     ports.sort_by_key(|p| p.port);
     ports.dedup_by(|a, b| a.port == b.port && a.proto == b.proto);
@@ -120,17 +210,23 @@ fn parse_socket_file(content: &str, proto: &str, ports: &mut Vec<OpenPort>) {
         }
         let local_addr = parts[1];
         let state_hex = parts[3];
-        let state = match (proto, state_hex) {
-            ("TCP", "0A") => "LISTEN",
-            ("TCP", "01") => "ESTABLISHED",
-            ("UDP", _) => "OPEN",
+        let is_tcp = proto == "TCP" || proto == "TCP6";
+        let state = match (is_tcp, state_hex) {
+            (true, "0A") => "LISTEN",
+            (true, "01") => "ESTABLISHED",
+            (false, _) => "OPEN",
             _ => continue,
         };
-        if proto == "TCP" && state != "LISTEN" {
+        if is_tcp && state != "LISTEN" {
             continue;
         }
         if let Some((ip_hex, port_hex)) = local_addr.split_once(':') {
-            if let (Ok(port), Ok(ip)) = (u16::from_str_radix(port_hex, 16), parse_hex_ip(ip_hex)) {
+            let ip = match ip_hex.len() {
+                8 => parse_hex_ip(ip_hex),
+                32 => parse_hex_ip6(ip_hex),
+                _ => Err(()),
+            };
+            if let (Ok(port), Ok(ip)) = (u16::from_str_radix(port_hex, 16), ip) {
                 let service_name = identify_service_port(port);
                 ports.push(OpenPort {
                     port,
@@ -160,31 +256,43 @@ fn parse_hex_ip(hex: &str) -> Result<String, ()> {
     ))
 }
 
+/// Decode the 32-hex IPv6 address from `/proc/net/tcp6|udp6`.
+/// The kernel prints each 32-bit word byte-swapped on little-endian hosts
+/// (e.g. `...01000000` is `::1`), so every 4-byte group is reversed back.
+/// Both linwatch targets (x86_64, aarch64) are little-endian.
+fn parse_hex_ip6(hex: &str) -> Result<String, ()> {
+    if hex.len() != 32 || !hex.is_ascii() {
+        return Err(());
+    }
+    let mut raw = [0u8; 16];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let pair = std::str::from_utf8(chunk).map_err(|_| ())?;
+        raw[i] = u8::from_str_radix(pair, 16).map_err(|_| ())?;
+    }
+    for word in raw.as_chunks_mut::<4>().0 {
+        word.reverse();
+    }
+    Ok(std::net::Ipv6Addr::from(u128::from_be_bytes(raw)).to_string())
+}
+
 pub fn read_system_info() -> SystemInfo {
-    let os_release = fs::read_to_string("/etc/os-release").unwrap_or_default();
-    let os_name = os_release_value(&os_release, "NAME").unwrap_or_else(|| String::from("Linux"));
-    let os_version =
-        os_release_value(&os_release, "VERSION_ID").unwrap_or_else(|| String::from("unknown"));
+    // freedesktop os-release spec: /etc takes precedence, /usr/lib is the
+    // vendor fallback, containers may expose the host file at /run/host.
+    let os_release = read_os_release_content();
+    let os_name = os_release_value(&os_release, "NAME")
+        .or_else(|| os_release_value(&os_release, "PRETTY_NAME"))
+        .unwrap_or_else(|| String::from("Linux"));
+    let os_version = os_release_value(&os_release, "VERSION_ID")
+        .or_else(|| os_release_value(&os_release, "VERSION"))
+        .unwrap_or_else(|| String::from("unknown"));
     let kernel =
         read_trimmed("/proc/sys/kernel/osrelease").unwrap_or_else(|| String::from("unknown"));
     let hostname =
         read_trimmed("/proc/sys/kernel/hostname").unwrap_or_else(|| String::from("localhost"));
     let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
 
-    let mut cpu_model = String::from("Unknown CPU");
-    let mut count = 0;
-    for line in cpuinfo.lines() {
-        if let Some(stripped) = line.strip_prefix("model name") {
-            if let Some((_, model)) = stripped.split_once(':') {
-                cpu_model = model.trim().to_string();
-            }
-        }
-        if line.starts_with("processor") {
-            count += 1;
-        }
-    }
-    let cpu_count = count.max(1);
-    let selinux_mode = read_selinux_mode();
+    let (cpu_model, cpu_count) = parse_cpuinfo(&cpuinfo);
+    let selinux_mode = read_security_mode();
     let cpu_vulnerabilities = read_cpu_vulnerabilities();
 
     SystemInfo {
@@ -197,6 +305,93 @@ pub fn read_system_info() -> SystemInfo {
         selinux_mode,
         cpu_vulnerabilities,
     }
+}
+
+fn read_os_release_content() -> String {
+    for path in [
+        "/etc/os-release",
+        "/usr/lib/os-release",
+        "/run/host/os-release",
+    ] {
+        if let Ok(content) = fs::read_to_string(path) {
+            if !content.trim().is_empty() {
+                return content;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Parse CPU model + count across x86 and ARM layouts.
+/// x86 uses `model name`; Raspberry Pi / ARM64 use `Model`, `Hardware`
+/// (+`Revision`), or `CPU part` instead.
+fn parse_cpuinfo(cpuinfo: &str) -> (String, usize) {
+    let mut model_x86: Option<String> = None;
+    let mut model_pi: Option<String> = None;
+    let mut hardware: Option<String> = None;
+    let mut revision: Option<String> = None;
+    let mut cpu_part: Option<String> = None;
+    let mut count = 0;
+    let mut mhz_count = 0;
+
+    for line in cpuinfo.lines() {
+        if let Some(stripped) = line.strip_prefix("model name") {
+            if let Some((_, model)) = stripped.split_once(':') {
+                let model = model.trim();
+                if !model.is_empty() && model_x86.is_none() {
+                    model_x86 = Some(model.to_string());
+                }
+            }
+        } else if let Some(stripped) = line.strip_prefix("Model") {
+            if let Some((_, model)) = stripped.split_once(':') {
+                let model = model.trim();
+                if !model.is_empty() && model_pi.is_none() {
+                    model_pi = Some(model.to_string());
+                }
+            }
+        } else if let Some(stripped) = line.strip_prefix("Hardware") {
+            if let Some((_, value)) = stripped.split_once(':') {
+                let value = value.trim();
+                if !value.is_empty() && hardware.is_none() {
+                    hardware = Some(value.to_string());
+                }
+            }
+        } else if let Some(stripped) = line.strip_prefix("Revision") {
+            if let Some((_, value)) = stripped.split_once(':') {
+                let value = value.trim();
+                if !value.is_empty() && revision.is_none() {
+                    revision = Some(value.to_string());
+                }
+            }
+        } else if line.starts_with("CPU part") {
+            if let Some((_, value)) = line.split_once(':') {
+                let value = value.trim();
+                if !value.is_empty() && cpu_part.is_none() {
+                    cpu_part = Some(value.to_string());
+                }
+            }
+        }
+        if line.starts_with("processor") {
+            count += 1;
+        } else if line.starts_with("cpu MHz") {
+            mhz_count += 1;
+        }
+    }
+
+    if count == 0 {
+        count = mhz_count;
+    }
+    let cpu_count = count.max(1);
+    let cpu_model = model_x86
+        .or(model_pi)
+        .or_else(|| match (hardware, revision) {
+            (Some(h), Some(r)) => Some(format!("{h} ({r})")),
+            (Some(h), None) => Some(h),
+            (None, _) => None,
+        })
+        .or_else(|| cpu_part.map(|p| format!("ARM ({p})")))
+        .unwrap_or_else(|| String::from("Unknown CPU"));
+    (cpu_model, cpu_count)
 }
 
 fn os_release_value(content: &str, key: &str) -> Option<String> {
@@ -257,6 +452,13 @@ pub fn read_mem_info() -> Option<MemInfo> {
 fn parse_mem_info(content: &str) -> Option<MemInfo> {
     let mut mem_total = 0.0;
     let mut mem_available = 0.0;
+    let mut has_available = false;
+    // Pre-3.14 kernels lack MemAvailable: emulate `free` as
+    // free + buffers + cache (+ reclaimable slab).
+    let mut mem_free = 0.0;
+    let mut buffers = 0.0;
+    let mut cached = 0.0;
+    let mut sreclaimable = 0.0;
     let mut swap_total = 0.0;
     let mut swap_free = 0.0;
 
@@ -270,6 +472,15 @@ fn parse_mem_info(content: &str) -> Option<MemInfo> {
             mem_total = value;
         } else if line.starts_with("MemAvailable:") {
             mem_available = value;
+            has_available = true;
+        } else if line.starts_with("MemFree:") {
+            mem_free = value;
+        } else if line.starts_with("Buffers:") {
+            buffers = value;
+        } else if line.starts_with("Cached:") {
+            cached = value;
+        } else if line.starts_with("SReclaimable:") {
+            sreclaimable = value;
         } else if line.starts_with("SwapTotal:") {
             swap_total = value;
         } else if line.starts_with("SwapFree:") {
@@ -277,9 +488,20 @@ fn parse_mem_info(content: &str) -> Option<MemInfo> {
         }
     }
 
+    let used_kb = if has_available {
+        mem_total - mem_available
+    } else {
+        let emulated_available = mem_free + buffers + cached + sreclaimable;
+        if emulated_available > 0.0 {
+            mem_total - emulated_available
+        } else {
+            mem_total - mem_free
+        }
+    };
+
     (mem_total > 0.0).then_some(MemInfo {
         total_mb: mem_total / 1024.0,
-        used_mb: (mem_total - mem_available).max(0.0) / 1024.0,
+        used_mb: used_kb.max(0.0) / 1024.0,
         swap_total_mb: swap_total / 1024.0,
         swap_used_mb: (swap_total - swap_free).max(0.0) / 1024.0,
     })
@@ -302,7 +524,37 @@ pub fn read_disk_info() -> Option<Vec<DiskInfo>> {
     (!infos.is_empty()).then_some(infos)
 }
 
+/// Root-disk entry: prefer `/`, fall back to the first real mount.
+pub fn primary_mount(mounts: &[DiskInfo]) -> Option<&DiskInfo> {
+    mounts
+        .iter()
+        .find(|m| m.mount_point == "/")
+        .or_else(|| mounts.first())
+}
+
 fn important_mounts() -> Vec<String> {
+    // Filter by filesystem type (not an allowlist of paths) so extra data
+    // mounts (/data, /mnt/*, NFS, btrfs subvolumes) are monitored too.
+    const PSEUDO: &[&str] = &[
+        "proc",
+        "sysfs",
+        "devtmpfs",
+        "devpts",
+        "tmpfs",
+        "shm",
+        "mqueue",
+        "cgroup",
+        "cgroup2",
+        "overlay",
+        "squashfs",
+        "nsfs",
+        "debugfs",
+        "tracefs",
+        "fusectl",
+        "configfs",
+        "securityfs",
+        "hugetlbfs",
+    ];
     let content = fs::read_to_string("/proc/mounts").unwrap_or_default();
     let mut mounts = Vec::new();
     for line in content.lines() {
@@ -311,15 +563,10 @@ fn important_mounts() -> Vec<String> {
         let Some(fs_type) = parts.get(2) else {
             continue;
         };
-        if matches!(
-            *fs_type,
-            "proc" | "sysfs" | "devtmpfs" | "tmpfs" | "cgroup" | "cgroup2" | "overlay" | "squashfs"
-        ) {
+        if PSEUDO.contains(fs_type) {
             continue;
         }
-        if *mount == "/" || *mount == "/home" || *mount == "/var" || *mount == "/boot" {
-            mounts.push((*mount).to_string());
-        }
+        mounts.push((*mount).to_string());
     }
     mounts.sort();
     mounts.dedup();
@@ -444,11 +691,17 @@ fn parse_disk_io_totals(content: &str) -> HashMap<String, (u64, u64)> {
 
     for line in content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
+        // 2.6+: major minor name + 11 stats (2.6) … +discard/flush fields (4.18+).
+        // Sectors read/write sit at indices 5 and 9 in both layouts.
         if parts.len() < 14 {
             continue;
         }
         let name = parts[2].to_string();
-        if name.starts_with("loop") || name.starts_with("dm-") || name.starts_with("ram") {
+        if name.starts_with("loop")
+            || name.starts_with("dm-")
+            || name.starts_with("ram")
+            || name.starts_with("zram")
+        {
             continue;
         }
         let rd_sectors: u64 = parts[5].parse().unwrap_or(0);
@@ -464,20 +717,40 @@ fn parse_disk_io_totals(content: &str) -> HashMap<String, (u64, u64)> {
 #[must_use]
 pub fn read_temperature() -> Option<f64> {
     let base = Path::new("/sys/class/thermal");
-    if let Ok(entries) = fs::read_dir(base) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let thermal_type = fs::read_to_string(path.join("type")).unwrap_or_default();
-            if thermal_type.trim() == "x86_pkg_temp" || thermal_type.trim().contains("cpu") {
-                if let Ok(temp_str) = fs::read_to_string(path.join("temp")) {
-                    if let Ok(temp_raw) = temp_str.trim().parse::<f64>() {
-                        return Some(temp_raw / 1000.0);
-                    }
-                }
-            }
+    let Ok(entries) = fs::read_dir(base) else {
+        return None;
+    };
+    let mut fallback: Option<f64> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let thermal_type = fs::read_to_string(path.join("type"))
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        // Never trust battery/charger zones as system temperature.
+        if thermal_type.contains("battery") || thermal_type.contains("charger") {
+            continue;
+        }
+        let Ok(temp_str) = fs::read_to_string(path.join("temp")) else {
+            continue;
+        };
+        let Ok(temp_raw) = temp_str.trim().parse::<f64>() else {
+            continue;
+        };
+        let temp_c = temp_raw / 1000.0;
+        if !(0.0..=150.0).contains(&temp_c) {
+            continue;
+        }
+        // Pass 1: CPU-ish zones win; pass 2: first sane zone of any type
+        // (covers acpitz, soc-thermal, Pi `cpu-thermal`, etc.).
+        if thermal_type == "x86_pkg_temp" || thermal_type.contains("cpu") {
+            return Some(temp_c);
+        }
+        if fallback.is_none() {
+            fallback = Some(temp_c);
         }
     }
-    None
+    fallback
 }
 
 #[must_use]
@@ -874,8 +1147,10 @@ pub fn read_process_summary(
     cpu_delta: u64,
 ) -> Option<ProcessSummary> {
     let entries = fs::read_dir("/proc").ok()?;
-    let mut processes = Vec::new();
-    let mut current_totals = HashMap::new();
+    // Pre-size from the previous tick (validated: HashMap::with_capacity + clear
+    // reuse keeps allocation across ticks instead of reallocating).
+    let mut processes = Vec::with_capacity(prev_totals.len().max(64));
+    let mut current_totals = HashMap::with_capacity(prev_totals.len().max(64));
     let mut zombie_count = 0;
     let page_size = page_size_bytes();
 
@@ -897,7 +1172,7 @@ pub fn read_process_summary(
             continue;
         };
 
-        if process.state == "Z" {
+        if process.info.state == "Z" {
             zombie_count += 1;
         }
         let total_time = process.total_time;
@@ -931,7 +1206,6 @@ pub fn read_process_summary(
 struct ParsedProcess {
     info: ProcessInfo,
     total_time: u64,
-    state: String,
 }
 
 fn parse_process_stat(
@@ -947,15 +1221,19 @@ fn parse_process_stat(
         return None;
     }
 
-    let name = content[open + 1..close].to_string();
-    let fields = content[close + 1..].split_whitespace().collect::<Vec<_>>();
-    if fields.len() <= 21 {
-        return None;
+    let name = content[open + 1..close].to_owned();
+    // Walk fields without collecting into a Vec (one fewer heap alloc per process).
+    // Layout after comm: 0 state, 1 ppid, 2 pgrp, 3 session, 4 tty, 5 tpgid, 6 flags,
+    // 7 minflt, 8 cminflt, 9 majflt, 10 cmajflt, 11 utime, 12 stime, 13 cutime,
+    // 14 cstime, 15 priority, 16 nice, 17 threads, 18 itreal, 19 starttime,
+    // 20 vsize, 21 rss.
+    let mut fields = content[close + 1..].split_whitespace();
+    let state = fields.next()?.to_owned();
+    for _ in 0..10 {
+        fields.next()?;
     }
-
-    let state = fields[0].to_string();
-    let utime: u64 = fields[11].parse().unwrap_or(0);
-    let stime: u64 = fields[12].parse().unwrap_or(0);
+    let utime: u64 = fields.next()?.parse().unwrap_or(0);
+    let stime: u64 = fields.next()?.parse().unwrap_or(0);
     let total_time = utime + stime;
     let cpu_pct = if cpu_delta > 0 {
         let prev = prev_totals.get(&pid).unwrap_or(&total_time);
@@ -964,7 +1242,14 @@ fn parse_process_stat(
     } else {
         0.0
     };
-    let rss_pages: f64 = fields[21].parse().unwrap_or(0.0);
+    for _ in 0..4 {
+        fields.next()?;
+    }
+    let threads: u32 = fields.next()?.parse().unwrap_or(1);
+    for _ in 0..3 {
+        fields.next()?;
+    }
+    let rss_pages: f64 = fields.next()?.parse().unwrap_or(0.0);
     let mem_mb = (rss_pages * page_size) / 1024.0 / 1024.0;
 
     Some(ParsedProcess {
@@ -973,14 +1258,13 @@ fn parse_process_stat(
             name,
             cpu_pct,
             mem_mb,
-            threads: fields[17].parse().unwrap_or(1),
-            state: state.clone(),
+            threads,
+            state,
             reason: String::new(),
             is_high_risk: false,
             is_dev: false,
         },
         total_time,
-        state,
     })
 }
 
@@ -1061,6 +1345,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_tcp6_listen_socket_and_ignores_established() {
+        let content = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+                       0: 00000000000000000000000001000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 1\n\
+                       1: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 01 00000000:00000000 00:00000000 00000000 1000 0 2\n";
+        let mut ports = Vec::new();
+
+        parse_socket_file(content, "TCP6", &mut ports);
+
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].ip, "::1");
+        assert_eq!(ports[0].port, 8080);
+        assert_eq!(ports[0].state, "LISTEN");
+    }
+
+    #[test]
+    fn parses_tcp6_wildcard_address() {
+        assert_eq!(
+            parse_hex_ip6("00000000000000000000000000000000").unwrap(),
+            "::"
+        );
+        assert_eq!(
+            parse_hex_ip6("00000000000000000000000001000000").unwrap(),
+            "::1"
+        );
+        assert!(parse_hex_ip6("0100007F").is_err());
+        assert!(parse_hex_ip6("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").is_err());
+    }
+
+    #[test]
     fn parses_network_totals_and_skips_loopback() {
         let totals = parse_network_totals(
             "Inter-|   Receive                                                |  Transmit\n\
@@ -1105,5 +1418,81 @@ mod tests {
         assert_eq!(parsed.total_time, 150);
         assert_eq!(parsed.info.cpu_pct, 25.0);
         assert_eq!(parsed.info.mem_mb, 1.0);
+    }
+
+    #[test]
+    fn meminfo_falls_back_without_memavailable() {
+        // Pre-3.14 kernels lack MemAvailable: emulate `free` as
+        // free + buffers + cache.
+        let mem = parse_mem_info(
+            "MemTotal:       8192000 kB\n\
+             MemFree:        1024000 kB\n\
+             Buffers:         204800 kB\n\
+             Cached:         3072000 kB\n\
+             SwapTotal:      2097152 kB\n\
+             SwapFree:       2097152 kB\n",
+        )
+        .unwrap();
+
+        assert_eq!(mem.total_mb, 8000.0);
+        // used = 8000 - (1000 + 200 + 3000) = 3800 MB, never 100%.
+        assert!((mem.used_mb - 3800.0).abs() < 1.0, "used={}", mem.used_mb);
+    }
+
+    #[test]
+    fn cpuinfo_parses_raspberry_pi_arm() {
+        let (model, count) = parse_cpuinfo(
+            "processor\t: 0\n\
+             Hardware\t: BCM2711\n\
+             Revision\t: c03111\n\
+             Serial\t\t: 10000000179dda37\n\
+             Model\t\t: Raspberry Pi 4 Model B Rev 1.1\n",
+        );
+
+        assert!(model.contains("Raspberry Pi 4"), "model={model}");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn cpuinfo_parses_x86_and_counts_cores() {
+        let (model, count) = parse_cpuinfo(
+            "processor\t: 0\n\
+             model name\t: Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz\n\
+             processor\t: 1\n\
+             model name\t: Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz\n",
+        );
+
+        assert!(model.contains("i7-9700K"), "model={model}");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn os_release_prefers_pretty_name_fallback() {
+        let content = "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nID=debian\n";
+        let name = os_release_value(content, "NAME")
+            .or_else(|| os_release_value(content, "PRETTY_NAME"))
+            .unwrap();
+        assert!(name.contains("Debian"), "name={name}");
+    }
+
+    #[test]
+    fn primary_mount_prefers_root_over_data() {
+        let mounts = vec![
+            DiskInfo {
+                mount_point: String::from("/data"),
+                used_gb: 1.0,
+                total_gb: 10.0,
+                pct: 10,
+            },
+            DiskInfo {
+                mount_point: String::from("/"),
+                used_gb: 5.0,
+                total_gb: 50.0,
+                pct: 10,
+            },
+        ];
+
+        assert_eq!(primary_mount(&mounts).unwrap().mount_point, "/");
+        assert!(primary_mount(&[]).is_none());
     }
 }

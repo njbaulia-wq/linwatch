@@ -91,6 +91,13 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
 
     let sorted = app.filtered_processes();
 
+    // Progressive column disclosure: hide low-priority columns first so the
+    // table never overflows narrow terminals.
+    let show_spark = area.width >= 110;
+    let show_why = area.width >= 100;
+    let show_state = area.width >= 88;
+    let show_thr = area.width >= 80;
+
     let p_rows = sorted
         .iter()
         .map(|p| {
@@ -125,8 +132,9 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                 t.text
             };
             let name_prefix = if is_dev { "[Dev] " } else { "" };
+            let name_width = if area.width < 100 { 12 } else { 18 };
 
-            Row::new(vec![
+            let mut cells = vec![
                 Cell::from(Span::styled(
                     format!("{:<7}", p.pid),
                     Style::default().fg(pid_color),
@@ -143,23 +151,34 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                     format!("{:>7.1}M", p.mem_mb),
                     Style::default().fg(t.overlay0),
                 )),
-                Cell::from(Span::styled(
+            ];
+            if show_thr {
+                cells.push(Cell::from(Span::styled(
                     format!("{:>4}", p.threads),
                     Style::default().fg(t.overlay1),
-                )),
-                Cell::from(Span::styled(
+                )));
+            }
+            if show_state {
+                cells.push(Cell::from(Span::styled(
                     truncate(&p.state, 10),
                     Style::default().fg(t.overlay0),
-                )),
-                Cell::from(Span::styled(
-                    format!("{}  {}{}", sev.symbol(), name_prefix, truncate(&p.name, 18)),
-                    Style::default().fg(name_color).add_modifier(if is_dev {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-                )),
-                Cell::from(Span::styled(
+                )));
+            }
+            cells.push(Cell::from(Span::styled(
+                format!(
+                    "{}  {}{}",
+                    sev.symbol(),
+                    name_prefix,
+                    truncate(&p.name, name_width)
+                ),
+                Style::default().fg(name_color).add_modifier(if is_dev {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            )));
+            if show_why {
+                cells.push(Cell::from(Span::styled(
                     truncate(&p.reason, 16),
                     Style::default().fg(if p.reason == "Normal" {
                         t.overlay0
@@ -168,10 +187,16 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                     } else {
                         severity_color(sev)
                     }),
-                )),
-                Cell::from(Span::styled(spark, Style::default().fg(t.accent_teal))),
-            ])
-            .style(Style::default().fg(t.text))
+                )));
+            }
+            if show_spark {
+                cells.push(Cell::from(Span::styled(
+                    spark,
+                    Style::default().fg(t.accent_teal),
+                )));
+            }
+
+            Row::new(cells).style(Style::default().fg(t.text))
         })
         .collect::<Vec<_>>();
 
@@ -208,34 +233,50 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             .fg(Color::Rgb(24, 24, 37))
             .bg(t.accent_blue);
 
+        let mut widths = vec![
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(9),
+        ];
+        if show_thr {
+            widths.push(Constraint::Length(5));
+        }
+        if show_state {
+            widths.push(Constraint::Length(11));
+        }
+        widths.push(Constraint::Min(16));
+        if show_why {
+            widths.push(Constraint::Length(17));
+        }
+        if show_spark {
+            widths.push(Constraint::Length(12));
+        }
+        let mut header_cells = vec![
+            Cell::from(header_col("PID")),
+            Cell::from(header_col("CPU%")),
+            Cell::from(header_col("MEM")),
+        ];
+        if show_thr {
+            header_cells.push(Cell::from(header_col("THR")));
+        }
+        if show_state {
+            header_cells.push(Cell::from(header_col("State")));
+        }
+        header_cells.push(Cell::from(header_col("Command")));
+        if show_why {
+            header_cells.push(Cell::from(header_col("Why")));
+        }
+        if show_spark {
+            header_cells.push(Cell::from(header_col("Spark")));
+        }
+
         frame.render_stateful_widget(
-            Table::new(
-                p_rows,
-                [
-                    Constraint::Length(8),
-                    Constraint::Length(8),
-                    Constraint::Length(9),
-                    Constraint::Length(5),
-                    Constraint::Length(11),
-                    Constraint::Min(16),
-                    Constraint::Length(17),
-                    Constraint::Length(12),
-                ],
-            )
-            .header(Row::new(vec![
-                Cell::from(header_col("PID")),
-                Cell::from(header_col("CPU%")),
-                Cell::from(header_col("MEM")),
-                Cell::from(header_col("THR")),
-                Cell::from(header_col("State")),
-                Cell::from(header_col("Command")),
-                Cell::from(header_col("Why")),
-                Cell::from(header_col("Spark")),
-            ]))
-            .block(panel_block("\u{2630} Process List"))
-            .column_spacing(1)
-            .highlight_style(highlight_style)
-            .highlight_symbol("  \u{25b6} "),
+            Table::new(p_rows, widths)
+                .header(Row::new(header_cells))
+                .block(panel_block("\u{2630} Process List"))
+                .column_spacing(1)
+                .highlight_style(highlight_style)
+                .highlight_symbol("  \u{25b6} "),
             chunks[1],
             table_state,
         );

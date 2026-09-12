@@ -9,12 +9,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/digitalninjanv"><img src="https://img.shields.io/badge/by-digitalninjanv-0f172a?style=for-the-badge&logo=github" alt="author badge" /></a>
+  <a href="https://github.com/njbaulia-wq"><img src="https://img.shields.io/badge/by-njbaulia-wq-0f172a?style=for-the-badge&logo=github" alt="author badge" /></a>
   <img src="https://img.shields.io/badge/Rust-2021-f97316?style=for-the-badge&logo=rust" alt="rust edition badge" />
   <img src="https://img.shields.io/badge/TUI-Ratatui-22c55e?style=for-the-badge" alt="ratatui badge" />
   <img src="https://img.shields.io/badge/Linux-%2Fproc%20native-38bdf8?style=for-the-badge&logo=linux" alt="linux proc badge" />
-  <a href="https://github.com/digitalninjanv/linwatch/releases"><img src="https://img.shields.io/github/v/release/digitalninjanv/linwatch?style=for-the-badge&logo=github&color=22c55e" alt="release badge" /></a>
-  <a href="https://github.com/digitalninjanv/linwatch/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/digitalninjanv/linwatch/release.yml?style=for-the-badge&logo=githubactions&label=build&color=38bdf8" alt="build badge" /></a>
+  <a href="https://github.com/njbaulia-wq/linwatch/releases"><img src="https://img.shields.io/github/v/release/njbaulia-wq/linwatch?style=for-the-badge&logo=github&color=22c55e" alt="release badge" /></a>
+  <a href="https://github.com/njbaulia-wq/linwatch/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/njbaulia-wq/linwatch/release.yml?style=for-the-badge&logo=githubactions&label=build&color=38bdf8" alt="build badge" /></a>
 </p>
 
 <p align="center">
@@ -51,7 +51,7 @@
 - **Minimal command use** — core metrics use `/proc`, `/sys`, and `statvfs`; optional local helpers enrich Git, systemd, and PCI labels
 - **Accountability-first** — every collector reports success or failure per tick
 
-The binary is ~1.2 MB (release) with a configurable TOML config file, keyboard-driven navigation, and panic-safe terminal recovery.
+The binary is ~1.5 MB (release) with a configurable TOML config file, keyboard-driven navigation, and panic-safe terminal recovery.
 
 ---
 
@@ -67,7 +67,7 @@ The binary is ~1.2 MB (release) with a configurable TOML config file, keyboard-d
 - **Command lokal minimal** — metrik inti memakai `/proc`, `/sys`, dan `statvfs`; helper lokal opsional memperkaya Git, systemd, dan label PCI
 - **Akuntabilitas** — setiap kolektor melaporkan sukses/gagal per tick
 
-Binary ~1.2 MB (release), konfigurasi via TOML, navigasi keyboard, dan panic-safe terminal recovery.
+Binary ~1.5 MB (release), konfigurasi via TOML, navigasi keyboard, dan panic-safe terminal recovery.
 
 ---
 
@@ -76,7 +76,7 @@ Binary ~1.2 MB (release), konfigurasi via TOML, navigasi keyboard, dan panic-saf
 ### Install
 
 ```bash
-curl -sSfL https://github.com/digitalninjanv/linwatch/releases/latest/download/install.sh | sh
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/latest/download/install.sh | sh
 ```
 
 ### Run
@@ -94,7 +94,7 @@ Press `Q` to quit. See [Installation](#installation) for all methods.
 ### One-liner (recommended)
 
 ```bash
-curl -sSfL https://github.com/digitalninjanv/linwatch/releases/latest/download/install.sh | sh
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/latest/download/install.sh | sh
 ```
 
 Automatically detects your CPU architecture (x86_64 or aarch64), downloads the matching prebuilt binary, and installs it to `~/.local/bin/`.
@@ -102,15 +102,15 @@ The installer verifies the release archive against `sha256sums.txt` before insta
 
 ### GitHub Releases
 
-Download from the [Releases page](https://github.com/digitalninjanv/linwatch/releases):
+Download from the [Releases page](https://github.com/njbaulia-wq/linwatch/releases):
 
 ```bash
 # x86_64
-curl -sSfL https://github.com/digitalninjanv/linwatch/releases/latest/download/linwatch-v0.1.2-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.4/linwatch-v0.1.4-x86_64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 
 # aarch64
-curl -sSfL https://github.com/digitalninjanv/linwatch/releases/latest/download/linwatch-v0.1.2-aarch64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.4/linwatch-v0.1.4-aarch64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 ```
 
@@ -123,7 +123,7 @@ cargo install linwatch
 ### Build from source
 
 ```bash
-git clone https://github.com/digitalninjanv/linwatch.git
+git clone https://github.com/njbaulia-wq/linwatch.git
 cd linwatch
 cargo build --release
 ./target/release/linwatch
@@ -146,7 +146,7 @@ rm -rf ~/.config/linwatch
 
 **Pilihan 1: Satu baris (recommended)**
 ```bash
-curl -sSfL https://github.com/digitalninjanv/linwatch/releases/latest/download/install.sh | sh
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/latest/download/install.sh | sh
 ```
 Otomatis download binary yang cocok dengan arsitektur kamu dan pasang ke `~/.local/bin/`.
 
@@ -157,7 +157,7 @@ cargo install linwatch
 
 **Pilihan 3: Build dari source**
 ```bash
-git clone https://github.com/digitalninjanv/linwatch.git
+git clone https://github.com/njbaulia-wq/linwatch.git
 cd linwatch
 cargo build --release
 ./target/release/linwatch
@@ -373,7 +373,9 @@ Example output structure:
   "alerts": [],
   "root_causes": [],
   "recent_events": [],
-  "sample_status": "OK"
+  "sample_status": "OK",
+  "environment": "Bare metal",
+  "security_mode": "Enforcing"
 }
 ```
 
@@ -511,7 +513,7 @@ flowchart LR
 4. **Evaluate** — health score calculation, threshold alerts, process high-risk markers, sparkline update
 5. **Render** — terminal draws the current tab: charts, gauges, tables, alerts
 
-Lazy reads: battery every 5 ticks, thermal every 3 ticks. System info read once at startup.
+Lazy reads: battery every 5 ticks, thermal every 3 ticks, GPU every 4 ticks, systemd/ports/storage-health every 8 ticks, git every 24 ticks (backing off 5x after repeated failures outside a repo). System info and environment detection run once at startup. Absent optional sources (no systemd, no battery, no sensors) are skipped, never counted as sample failures.
 
 ---
 
@@ -520,16 +522,17 @@ Lazy reads: battery every 5 ticks, thermal every 3 ticks. System info read once 
 | Layer | Signal | Source | Granularity |
 |-------|--------|--------|-------------|
 | Compute | CPU total, per-core, load 1/5/15m | `/proc/stat`, `/proc/loadavg` | Per-tick delta |
-| Memory | RAM used/total, swap used/total | `/proc/meminfo` (MemAvailable) | Instant read |
-| Storage | Mount usage, mount list | `/proc/mounts` + `statvfs` | Instant read |
+| Memory | RAM used/total, swap used/total | `/proc/meminfo` (`MemAvailable`, emulated from free+buffers+cache on kernels < 3.14) | Instant read |
+| Storage | Mount usage, mount list | `/proc/mounts` (pseudo-filesystems excluded) + `statvfs` | Instant read |
 | Disk I/O | Per-device read/write throughput | `/proc/diskstats` | Delta-based |
 | Network | Per-interface RX/TX bytes | `/proc/net/dev` | Delta-based |
-| GPU | Vendor, model, temp, usage, power, freq, VRAM, RC6 | `/sys/class/drm` + `/sys/class/hwmon`, optional local PCI label cache | Instant read |
-| Processes | Top CPU/MEM, count, per-process sparkline | `/proc/<pid>/stat`, `/proc/<pid>/status` | Delta CPU, instant MEM |
+| Open ports | Listening TCP/UDP ports, IPv4 + IPv6 | `/proc/net/tcp`, `/proc/net/udp`, `/proc/net/tcp6`, `/proc/net/udp6` | Every 8 ticks |
+| GPU | Vendor, model, temp, usage, power, freq, VRAM, RC6 | `/sys/class/drm` + `/sys/class/hwmon`, optional local PCI label cache | Every 4 ticks |
+| Processes | Top CPU/MEM, count, per-process sparkline | `/proc/<pid>/stat` | Delta CPU, instant MEM |
 | Battery | Capacity %, charging status | `/sys/class/power_supply` | Every 5 ticks |
-| Thermal | Temperature in °C | `/sys/class/thermal` | Every 3 ticks |
-| Platform | OS, kernel, hostname, CPU model | `/etc/os-release`, `/proc/sys/kernel/*`, `/proc/cpuinfo` | Once at startup |
-| Local status | Failed units, Git dirty count | `systemctl`, `git status --porcelain` | Every 8 ticks |
+| Thermal | Temperature in °C | `/sys/class/thermal` (CPU zones preferred, battery zones skipped) | Every 3 ticks |
+| Platform | OS, kernel, hostname, CPU model, environment | `/etc/os-release` (fallback `/usr/lib/os-release`, `/run/host/os-release`), `/proc/sys/kernel/*`, `/proc/cpuinfo` (x86 + ARM layouts) | Once at startup |
+| Local status | Failed units (best-effort), Git dirty count | `systemctl` (skipped when systemd absent), `git status --porcelain` | systemd+ports every 8 ticks, git every 24 ticks with backoff |
 
 ---
 
@@ -560,12 +563,15 @@ The health score (0-100) is calculated using a penalty-based system:
 ## Accuracy Notes
 
 - **CPU**: reads `/proc/stat` fields 3 (idle) + 4 (iowait) as idle. Delta over refresh interval.
-- **Memory**: uses `MemAvailable` for used calculation (`MemTotal - MemAvailable`), not `MemFree`. This accounts for cached and buffered memory that is reclaimable, giving a more accurate picture of actual available memory.
+- **Memory**: uses `MemAvailable` for used calculation (`MemTotal - MemAvailable`), not `MemFree`. On kernels older than 3.14 (no `MemAvailable`), availability is emulated as `MemFree + Buffers + Cached + SReclaimable`, like `free(1)`.
+- **CPU model**: `model name` on x86; `Model` / `Hardware` (+`Revision`) / `CPU part` on ARM (e.g. Raspberry Pi).
 - **Process CPU**: `utime + stime` from `/proc/<pid>/stat`, normalized against total CPU delta. The first tick always shows 0% since no delta exists yet.
-- **Disk I/O**: sector count * 512 bytes. Delta over refresh interval. Filters out loop, dm-*, and ram devices.
+- **Disk I/O**: sector count * 512 bytes. Delta over refresh interval. Filters out loop, dm-*, ram, and zram devices.
 - **Network**: byte counters from `/proc/net/dev`. Skips loopback interface. Delta over refresh interval.
-- **GPU**: reads from `/sys/class/drm` for device information and `/sys/class/hwmon` for temperature/power metrics. RC6 residency from debugfs.
-- **Battery/Thermal**: read every 5/3 ticks respectively to reduce I/O pressure on `/sys`.
+- **Open ports**: parses `/proc/net/tcp|udp|tcp6|udp6`. IPv6 addresses are 32-hex words with per-word byte order corrected. TCP shows `LISTEN` only; UDP shows `OPEN`.
+- **GPU**: reads from `/sys/class/drm` for device information and `/sys/class/hwmon` for temperature/power metrics. Intel RC6 residency from `power/rc6_residency_ms` in sysfs.
+- **Battery/Thermal**: read every 5/3 ticks respectively to reduce I/O pressure on `/sys`. Battery/charger thermal zones are never used as system temperature.
+- **Mounts**: all real filesystems are shown (pseudo-filesystems such as `proc`, `sysfs`, `tmpfs`, `cgroup*`, `overlay`, `squashfs` excluded); the root disk gauge prefers `/`.
 
 ---
 
@@ -580,7 +586,7 @@ The health score (0-100) is calculated using a penalty-based system:
 
 ```bash
 cargo fmt                  # Format code
-cargo test                 # Run unit tests (30+ tests)
+cargo test                 # Run unit tests (50+ tests)
 cargo clippy -- -D warnings # Lint
 cargo build --release      # Build optimized binary
 ```
@@ -619,7 +625,7 @@ The install script downloads both the archive and checksum file, verifies SHA256
 ## Binary specs
 
 ```
-Size:       ~1.2 MB (stripped release build)
+Size:       ~1.5 MB (stripped release build)
 Strip:      symbols stripped in release profile
 LTO:        thin
 opt-level:  3

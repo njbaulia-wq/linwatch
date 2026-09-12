@@ -18,7 +18,22 @@ pub fn footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &AppState) {
         " H-help "
     };
 
-    let text = if app.terminal_width < 100 {
+    // Three density levels so the bar never clips mid-word on narrow screens.
+    let text = if app.terminal_width < 64 {
+        Line::from(vec![
+            Span::styled("Q ", Style::default().fg(t.overlay0)),
+            Span::styled("| R ", Style::default().fg(t.overlay0)),
+            Span::styled(format!("|{help_label}"), Style::default().fg(t.overlay0)),
+            Span::styled(
+                app.refresh_label(),
+                Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" |{}", app.sample_status()),
+                Style::default().fg(sample_status_color(app.sample_status())),
+            ),
+        ])
+    } else if app.terminal_width < 100 {
         Line::from(vec![
             Span::styled("Q Exit ", Style::default().fg(t.overlay0)),
             Span::styled("| R Refresh ", Style::default().fg(t.overlay0)),
@@ -30,12 +45,20 @@ pub fn footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &AppState) {
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
+                format!(
+                    " | \u{2193}{}/s \u{2191}{}/s",
+                    format_bytes(app.net_down_bps),
+                    format_bytes(app.net_up_bps)
+                ),
+                Style::default().fg(t.accent_teal),
+            ),
+            Span::styled(
                 format!(" | Data {}", app.sample_status()),
                 Style::default().fg(sample_status_color(app.sample_status())),
             ),
         ])
     } else {
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled("Q Exit ", Style::default().fg(t.overlay0)),
             Span::styled("| R Refresh now ", Style::default().fg(t.overlay0)),
             Span::styled("| Tab Switch view ", Style::default().fg(t.overlay0)),
@@ -56,7 +79,14 @@ pub fn footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &AppState) {
                 format!("Up {}/s", format_bytes(app.net_up_bps)),
                 Style::default().fg(t.accent_orange),
             ),
-        ])
+        ];
+        if app.env.is_host_scoped() {
+            spans.push(Span::styled(
+                format!(" | {} host-scope", app.env.label()),
+                Style::default().fg(t.accent_yellow),
+            ));
+        }
+        Line::from(spans)
     };
 
     frame.render_widget(
