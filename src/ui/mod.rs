@@ -246,7 +246,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
                 .bg(t.accent_blue)
                 .add_modifier(Modifier::BOLD),
         )
-        .style(Style::default().fg(t.overlay0))
+        .style(Style::default().fg(t.overlay1))
         .divider(Span::raw(" "));
 
     frame.render_widget(tabs, area);

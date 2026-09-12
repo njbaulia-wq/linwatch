@@ -66,33 +66,33 @@ fn render_gpu_summary(frame: &mut Frame, area: Rect, app: &AppState) {
         let clock_text = clock_text(gpu);
         let lines = vec![
             Line::from(vec![
-                styled("\u{25a6} Primary: ", t.overlay0),
+                styled("\u{25a6} Primary: ", t.overlay1),
                 Span::styled(
                     format!("{} {}", gpu.kind, truncate(&gpu.model, 42)),
                     Style::default().fg(t.text).add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
-                styled("Driver: ", t.overlay0),
+                styled("Driver: ", t.overlay1),
                 styled(gpu.driver.clone(), t.text),
-                styled(" | Slot: ", t.overlay0),
+                styled(" | Slot: ", t.overlay1),
                 styled(gpu.pci_slot.clone(), t.text),
-                styled(" | State: ", t.overlay0),
+                styled(" | State: ", t.overlay1),
                 styled(gpu.power_state.clone(), t.text),
             ]),
             Line::from(vec![
-                styled("Load: ", t.overlay0),
+                styled("Load: ", t.overlay1),
                 styled(usage_text, t.text),
-                styled(" | Temp: ", t.overlay0),
+                styled(" | Temp: ", t.overlay1),
                 styled(temp_text, t.text),
-                styled(" | Clock: ", t.overlay0),
+                styled(" | Clock: ", t.overlay1),
                 styled(clock_text, t.text),
             ]),
             Line::from(vec![
-                styled("Power: ", t.overlay0),
+                styled("Power: ", t.overlay1),
                 styled(power_text, t.text),
-                styled(" | ", t.overlay0),
-                styled("Sensor: ", t.overlay0),
+                styled(" | ", t.overlay1),
+                styled("Sensor: ", t.overlay1),
                 styled(gpu.sensor_source.clone(), t.overlay1),
             ]),
         ];
@@ -127,28 +127,28 @@ fn render_gpu_summary(frame: &mut Frame, area: Rect, app: &AppState) {
 
     let details = vec![
         Line::from(vec![
-            styled("\u{25a6} Primary: ", t.overlay0),
+            styled("\u{25a6} Primary: ", t.overlay1),
             Span::styled(
                 format!("{} {}", gpu.kind, truncate(&gpu.model, 44)),
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            styled("Driver: ", t.overlay0),
+            styled("Driver: ", t.overlay1),
             styled(gpu.driver.clone(), t.text),
-            styled("  |  Slot: ", t.overlay0),
+            styled("  |  Slot: ", t.overlay1),
             styled(gpu.pci_slot.clone(), t.text),
-            styled("  |  Power: ", t.overlay0),
+            styled("  |  Power: ", t.overlay1),
             styled(gpu.power_state.clone(), t.text),
         ]),
         Line::from(vec![
-            styled("Sensors: ", t.overlay0),
+            styled("Sensors: ", t.overlay1),
             styled(gpu.sensor_source.clone(), t.overlay1),
-            styled("  |  Usage: ", t.overlay0),
+            styled("  |  Usage: ", t.overlay1),
             styled(usage_text, t.text),
-            styled("  |  Temp: ", t.overlay0),
+            styled("  |  Temp: ", t.overlay1),
             styled(temp_text, t.text),
-            styled("  |  Draw: ", t.overlay0),
+            styled("  |  Draw: ", t.overlay1),
             styled(power_text, t.text),
         ]),
     ];

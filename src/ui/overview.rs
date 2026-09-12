@@ -74,25 +74,12 @@ fn render_full_layout(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HEALTH BAR — compact inline health + temp + battery + net + uptime
+// VERDICT BAR — one glanceable answer: health + primary cause.
+// Temp/battery/net/uptime live in header/footer; repeating them here was
+// redundant ink.
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_health_bar_inline(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
     let sev = Severity::from_health(app.health_score as f64);
-
-    let temp = app
-        .temp_c
-        .map(|v| format!("{v:.0}\u{b0}"))
-        .unwrap_or_else(|| "\u{2014}".into());
-    let bat = app
-        .battery_pct
-        .map(|v| format!("{v}%"))
-        .unwrap_or_else(|| "\u{2014}".into());
-    let net = format!(
-        "\u{2193}{}/s \u{2191}{}/s",
-        format_bytes(app.net_down_bps),
-        format_bytes(app.net_up_bps)
-    );
 
     if area.width < 50 {
         let block = panel_block_severity("", sev);
@@ -106,62 +93,72 @@ fn render_health_bar_inline(frame: &mut Frame, area: Rect, app: &AppState) {
                     .add_modifier(Modifier::BOLD),
             )
             .ratio(visual_ratio(app.health_score as f64, inner.width))
-            .label(Span::styled(
-                format!("{} {}%", sev.symbol(), app.health_score),
-                Style::default()
-                    .fg(severity_color(sev))
-                    .add_modifier(Modifier::BOLD),
-            ));
+            .label(Line::from(vec![
+                severity_chip(sev),
+                Span::styled(
+                    format!(" {}", app.health_score),
+                    Style::default()
+                        .fg(severity_color(sev))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
         frame.render_widget(gauge, inner);
         return;
     }
 
-    let left_width = 22u16.min(area.width / 3);
+    let left_width = 24u16.min(area.width / 3);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(left_width), Constraint::Min(20)])
         .split(area);
 
-    let gauge = LineGauge::default()
-        .gauge_style(
-            Style::default()
-                .fg(severity_color(sev))
-                .add_modifier(Modifier::BOLD),
-        )
-        .ratio(visual_ratio(app.health_score as f64, chunks[0].width))
-        .label(Span::styled(
-            format!(" {} {}%", sev.symbol(), app.health_score),
-            Style::default()
-                .fg(severity_color(sev))
-                .add_modifier(Modifier::BOLD),
-        ));
-    frame.render_widget(gauge, chunks[0]);
+    let health_word = match sev {
+        Severity::Ok => "Healthy",
+        Severity::Warn => "Attention",
+        Severity::Critical => "Critical",
+        Severity::Neutral => "Monitoring",
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            severity_chip(sev),
+            Span::styled(
+                format!(" {} {health_word}", app.health_score),
+                Style::default()
+                    .fg(severity_color(sev))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        chunks[0],
+    );
 
-    let data_color = sample_status_color(app.sample_status());
-    let info = Line::from(vec![
-        Span::styled(
-            format!("{} ", app.sample_status()),
-            Style::default().fg(data_color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("\u{2600} {temp}  "),
-            Style::default().fg(t.accent_orange),
-        ),
-        Span::styled(
-            format!("\u{26a1} {bat}  "),
-            Style::default().fg(t.accent_yellow),
-        ),
-        Span::styled(format!("{net}  "), Style::default().fg(t.accent_teal)),
-        Span::styled(
-            format!("Up {}", truncate(&app.uptime, 12)),
-            Style::default().fg(t.overlay1),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(info), chunks[1]);
+    let cause_line = match app.root_causes.first() {
+        Some(cause) if cause.severity != Severity::Ok => Line::from(vec![
+            severity_chip(cause.severity),
+            Span::styled(
+                format!(" {} ", truncate(&cause.title, 16)),
+                Style::default()
+                    .fg(severity_color(cause.severity))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                truncate(&cause.detail, chunks[1].width as usize),
+                Style::default().fg(theme::get().subtext1),
+            ),
+        ]),
+        _ => Line::from(vec![
+            severity_chip(Severity::Ok),
+            Span::styled(
+                " All thresholds nominal",
+                Style::default().fg(theme::get().subtext1),
+            ),
+        ]),
+    };
+    frame.render_widget(Paragraph::new(cause_line), chunks[1]);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// KPI ROW — 4 visual gauge cards with CPU name + mini sparkline
+// KPI ROW — 4 borderless stat blocks: label, honest value, sparkline.
+// Severity rides on the value color (+chip), never on decoration.
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_kpi_row(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
@@ -175,138 +172,137 @@ fn render_kpi_row(frame: &mut Frame, area: Rect, app: &AppState) {
         ])
         .split(area);
 
-    let cpu = app.cpu_usage;
-    let mem = app.mem_pct();
-    let dsk = app.disk.pct as f64;
     let gpu = app.primary_gpu();
-    let gpu_usage = gpu.and_then(|g| g.usage_pct);
-
-    render_kpi_gauge(
+    let gpu_history = if gpu.is_some() && app.gpu_usage_history.len() >= 2 {
+        Some(&app.gpu_usage_history)
+    } else {
+        None
+    };
+    render_kpi_stat(
         frame,
         chunks[0],
         "CPU",
-        &format!("{}  x{}", app.system.cpu_model, app.system.cpu_count),
-        app.system.cpu_count,
-        cpu,
+        &format!(
+            "{} ×{}",
+            truncate(&app.system.cpu_model, 20),
+            app.system.cpu_count
+        ),
+        Some(app.cpu_usage),
+        Some(&app.cpu_history),
         t.accent_teal,
-        &app.cpu_history,
-        100,
     );
-    render_kpi_gauge(
+    render_kpi_stat(
         frame,
         chunks[1],
         "GPU",
         &gpu.map(|g| truncate(&g.model, 20))
-            .unwrap_or_else(|| "None".into()),
-        0,
-        gpu_usage.unwrap_or(0.0),
+            .unwrap_or_else(|| String::from("None")),
+        gpu.and_then(|g| g.usage_pct),
+        gpu_history,
         t.accent_purple,
-        &app.gpu_usage_history,
-        100,
     );
-    render_kpi_gauge(
+    render_kpi_stat(
         frame,
         chunks[2],
         "MEM",
         &format_memory_detail(app.mem_used, app.mem_total),
-        0,
-        mem,
+        Some(app.mem_pct()),
+        Some(&app.mem_history),
         t.accent_yellow,
-        &app.mem_history,
-        100,
     );
-    render_kpi_gauge(
+    render_kpi_stat(
         frame,
         chunks[3],
         "DSK",
-        &format!("{:.0} / {:.0} GB", app.disk.used_gb, app.disk.total_gb),
-        0,
-        dsk,
+        &format!("{:.0}/{:.0}GB", app.disk.used_gb, app.disk.total_gb),
+        Some(app.disk.pct as f64),
+        None,
         t.accent_green,
-        &VecDeque::new(),
-        100,
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_kpi_gauge(
+fn render_kpi_stat(
     frame: &mut Frame,
     area: Rect,
     label: &str,
     subtitle: &str,
-    extra: usize,
-    value: f64,
+    value: Option<f64>,
+    history: Option<&VecDeque<(f64, f64)>>,
     color: ratatui::style::Color,
-    history: &VecDeque<(f64, f64)>,
-    max: u64,
 ) {
-    let t = theme::get();
-    let sev = Severity::from_usage(value);
-    let block = panel_block_severity(format!(" {label} "), sev);
+    let block = flat_panel("");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.height < 2 || inner.width < 6 {
+    if inner.height < 2 || inner.width < 10 {
+        // Ultra-compact: single honest line.
+        let line = match value {
+            Some(v) => format!("{label} {}", fmt_pct0(v)),
+            None => format!("{label} N/A"),
+        };
+        frame.render_widget(Paragraph::new(dim(line)), inner);
         return;
     }
-
-    let gauge_height = if inner.height >= 6 { 2 } else { 1 };
-    let spark_height = inner.height.saturating_sub(gauge_height + 2) as usize;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(gauge_height),
-            Constraint::Min(spark_height as u16),
+            Constraint::Length(1),
+            Constraint::Min(1),
         ])
         .split(inner);
 
-    // Subtitle (CPU name, GPU model, etc.)
-    let subtitle_color = if extra > 0 { t.overlay0 } else { t.overlay1 };
-    let subtitle_text = if extra > 0 {
-        format!("{subtitle} \u{00d7}{extra}")
-    } else {
-        subtitle.to_string()
-    };
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            truncate(&subtitle_text, inner.width as usize),
-            Style::default().fg(subtitle_color),
-        )),
+        Paragraph::new(dim(format!(
+            "{label} · {}",
+            truncate(
+                subtitle,
+                (inner.width as usize).saturating_sub(label.len() + 3)
+            )
+        ))),
         chunks[0],
     );
 
-    // Gauge bar with value
-    let gauge = LineGauge::default()
-        .gauge_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-        .ratio(visual_ratio(value, chunks[1].width))
-        .label(Span::styled(
-            format!(" {value:.1}%"),
-            Style::default()
-                .fg(severity_color(sev))
-                .add_modifier(Modifier::BOLD),
-        ));
-    frame.render_widget(gauge, chunks[1]);
-
-    // Sparkline if enough space and data
-    if spark_height >= 2 && history.len() >= 2 {
-        let data: Vec<u64> = history
-            .iter()
-            .rev()
-            .take(inner.width as usize)
-            .rev()
-            .map(|(_, v)| v.max(0.0).round() as u64)
-            .collect();
-        if data.len() >= 2 {
+    match value {
+        Some(v) => {
+            let sev = Severity::from_usage(v);
             frame.render_widget(
-                Sparkline::default()
-                    .data(&data)
-                    .max(max)
-                    .style(Style::default().fg(color)),
-                chunks[2],
+                Paragraph::new(Line::from(vec![
+                    severity_chip(sev),
+                    Span::styled(
+                        format!(" {}", fmt_pct1(v)),
+                        Style::default()
+                            .fg(severity_color(sev))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                chunks[1],
             );
         }
+        None => {
+            frame.render_widget(Paragraph::new(dim("○ N/A")), chunks[1]);
+        }
+    }
+
+    let points: Vec<u64> = history
+        .map(|h| {
+            h.iter()
+                .rev()
+                .take(inner.width as usize)
+                .rev()
+                .map(|(_, v)| v.max(0.0).round() as u64)
+                .collect()
+        })
+        .unwrap_or_default();
+    if points.len() >= 2 {
+        frame.render_widget(
+            Sparkline::default()
+                .data(&points)
+                .max(100)
+                .style(Style::default().fg(color)),
+            chunks[2],
+        );
     }
 }
 
@@ -315,29 +311,44 @@ fn render_kpi_gauge(
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_kpi_compact_row(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
-    let cpu = app.cpu_usage;
-    let mem = app.mem_pct();
-    let dsk = app.disk.pct as f64;
-    let gpu = app.primary_gpu().and_then(|g| g.usage_pct);
-
+    let gpu = app.primary_gpu();
     let items = [
-        ("CPU", cpu, t.accent_teal),
-        ("GPU", gpu.unwrap_or(0.0), t.accent_purple),
-        ("MEM", mem, t.accent_yellow),
-        ("DSK", dsk, t.accent_green),
+        (
+            "CPU",
+            truncate(&app.system.cpu_model, 14),
+            Some(app.cpu_usage),
+            Some(&app.cpu_history),
+            t.accent_teal,
+        ),
+        (
+            "GPU",
+            gpu.map(|g| truncate(&g.model, 12))
+                .unwrap_or_else(|| String::from("None")),
+            gpu.and_then(|g| g.usage_pct),
+            None,
+            t.accent_purple,
+        ),
+        (
+            "MEM",
+            format!(
+                "{:.1}/{:.1}GiB",
+                app.mem_used / 1024.0,
+                app.mem_total / 1024.0
+            ),
+            Some(app.mem_pct()),
+            Some(&app.mem_history),
+            t.accent_yellow,
+        ),
+        (
+            "DSK",
+            format!("{:.0}/{:.0}GB", app.disk.used_gb, app.disk.total_gb),
+            Some(app.disk.pct as f64),
+            None,
+            t.accent_green,
+        ),
     ];
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(34),
-            Constraint::Percentage(34),
-            Constraint::Percentage(16),
-            Constraint::Percentage(16),
-        ])
-        .split(area);
-
-    // Below ~48 cols four gauges side-by-side are unreadable: use a 2x2 grid.
+    // Below ~48 cols four stats side-by-side are unreadable: use a 2x2 grid.
     if area.width < 48 && area.height >= 7 {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -349,42 +360,33 @@ fn render_kpi_compact_row(frame: &mut Frame, area: Rect, app: &AppState) {
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(*row);
             for (slot, item_idx) in pair.iter().enumerate() {
-                render_kpi_compact_gauge(frame, pair_cols[slot], items[*item_idx]);
+                let (label, subtitle, value, history, color) = &items[*item_idx];
+                render_kpi_stat(
+                    frame,
+                    pair_cols[slot],
+                    label,
+                    subtitle,
+                    *value,
+                    *history,
+                    *color,
+                );
             }
         }
         return;
     }
 
-    for (i, item) in items.iter().enumerate() {
-        render_kpi_compact_gauge(frame, cols[i], *item);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(34),
+            Constraint::Percentage(16),
+            Constraint::Percentage(16),
+        ])
+        .split(area);
+    for (i, (label, subtitle, value, history, color)) in items.iter().enumerate() {
+        render_kpi_stat(frame, cols[i], label, subtitle, *value, *history, *color);
     }
-}
-
-fn render_kpi_compact_gauge(
-    frame: &mut Frame,
-    area: Rect,
-    item: (&str, f64, ratatui::style::Color),
-) {
-    let (label, value, color) = item;
-    let sev = Severity::from_usage(value);
-    let block = panel_block_severity(format!(" {label} "), sev);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 1 || inner.width < 4 {
-        return;
-    }
-
-    let gauge = LineGauge::default()
-        .gauge_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-        .ratio(visual_ratio(value, inner.width))
-        .label(Span::styled(
-            format!("{value:.0}%"),
-            Style::default()
-                .fg(severity_color(sev))
-                .add_modifier(Modifier::BOLD),
-        ));
-    frame.render_widget(gauge, inner);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -431,14 +433,19 @@ fn render_mini_gauge(
     let t = theme::get();
     let sev = Severity::from_usage(value);
 
+    // Narrow columns drop the trailing state word; value + bar suffice.
+    let wide = area.width >= 30;
+    let mut constraints = vec![
+        Constraint::Length(5),
+        Constraint::Length(6),
+        Constraint::Min(6),
+    ];
+    if wide {
+        constraints.push(Constraint::Length(5));
+    }
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Min(6),
-            Constraint::Length(5),
-        ])
+        .constraints(constraints)
         .split(area);
 
     frame.render_widget(
@@ -464,14 +471,16 @@ fn render_mini_gauge(
         .label(Span::raw(""));
     frame.render_widget(gauge, cols[2]);
 
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            severity_label(sev),
-            Style::default().fg(severity_color(sev)),
-        ))
-        .alignment(Alignment::Right),
-        cols[3],
-    );
+    if wide {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                severity_word(sev),
+                Style::default().fg(severity_color(sev)),
+            ))
+            .alignment(Alignment::Right),
+            cols[3],
+        );
+    }
 }
 
 fn render_detail_gauge(
@@ -601,8 +610,11 @@ fn render_charts(frame: &mut Frame, area: Rect, app: &AppState) {
     let cpu_avg = moving_average(&app.cpu_history, 5);
     let cpu_peak = app.cpu_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
     let cpu_title = format!(
-        "CPU {:>3.0}%  \u{2205}{cpu_avg:.0} \u{2191}{cpu_peak:.0}  {}",
-        app.cpu_usage, app.system.cpu_model
+        "CPU {} · AVG {:.0} PEAK {:.0}  {}",
+        fmt_pct1(app.cpu_usage),
+        cpu_avg,
+        cpu_peak,
+        truncate(&app.system.cpu_model, 20)
     );
     render_chart(
         frame,
@@ -622,10 +634,12 @@ fn render_charts(frame: &mut Frame, area: Rect, app: &AppState) {
         .fold(gpu_usage, f64::max);
     let gpu_name = gpu
         .map(|g| truncate(&g.model, 22))
-        .unwrap_or_else(|| "No GPU sensor".into());
+        .unwrap_or_else(|| String::from("No GPU sensor"));
     let gpu_title = format!(
-        "GPU {:>3.0}%  \u{2205}{gpu_avg:.0} \u{2191}{gpu_peak:.0}  {gpu_name}",
-        gpu_usage
+        "GPU {} · AVG {:.0} PEAK {:.0}  {gpu_name}",
+        fmt_pct1(gpu_usage),
+        gpu_avg,
+        gpu_peak
     );
     render_chart(
         frame,
@@ -705,7 +719,6 @@ fn render_compact_wave_chart(
     data: &VecDeque<(f64, f64)>,
     color: ratatui::style::Color,
 ) {
-    let t = theme::get();
     let block = chart_block(title, color);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -737,7 +750,10 @@ fn render_compact_wave_chart(
                 format!("{:>3.0}% ", latest),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(status_dot(latest), Style::default().fg(t.overlay1)),
+            Span::styled(
+                severity_word(Severity::from_usage(latest)),
+                Style::default().fg(severity_color(Severity::from_usage(latest))),
+            ),
         ])),
         chunks[0],
     );
@@ -775,7 +791,8 @@ fn chart_block(title: &str, color: ratatui::style::Color) -> Block<'static> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// RESOURCE BARS — pressure gauges
+// RESOURCE BARS — true-percent gauges only. NET (bps) and TEMP (°C) are not
+// percents, so they render as honest text lines, never fake gauges.
 // ═══════════════════════════════════════════════════════════════════════════════
 fn render_resource_bars(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
@@ -787,58 +804,22 @@ fn render_resource_bars(frame: &mut Frame, area: Rect, app: &AppState) {
         return;
     }
 
-    if inner.height >= 9 {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(4), Constraint::Min(4)])
-            .split(inner);
-
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(chunks[0]);
-
-        render_detail_gauge(
-            frame,
-            rows[0],
-            "MEM ",
-            app.mem_pct(),
-            &format_memory_detail(app.mem_used, app.mem_total),
-            t.accent_yellow,
-        );
-        render_mini_gauge(frame, rows[1], "DSK ", app.disk.pct as f64, t.accent_green);
-        render_mini_gauge(
-            frame,
-            rows[2],
-            "NET\u{2193}",
-            app.net_down_bps.min(10_000_000.0) / 100_000.0,
-            t.accent_blue,
-        );
-        render_mini_gauge(
-            frame,
-            rows[3],
-            "TEMP",
-            app.temp_c.unwrap_or(0.0),
-            t.accent_orange,
-        );
-        render_process_bars(frame, chunks[1], app);
-        return;
-    }
+    // Tall panels get separate NET + TEMP lines; short ones share a line.
+    let tall = inner.height >= 10;
+    let rows_len = if tall { 5 } else { 4 };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(rows_len), Constraint::Min(3)])
+        .split(inner);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
+        .constraints(
+            (0..rows_len)
+                .map(|_| Constraint::Length(1))
+                .collect::<Vec<_>>(),
+        )
+        .split(chunks[0]);
 
     render_detail_gauge(
         frame,
@@ -850,12 +831,50 @@ fn render_resource_bars(frame: &mut Frame, area: Rect, app: &AppState) {
     );
     render_mini_gauge(frame, rows[1], "DSK ", app.disk.pct as f64, t.accent_green);
     render_mini_gauge(frame, rows[2], "SWAP", app.swap_pct(), t.accent_purple);
-    render_mini_gauge(
-        frame,
-        rows[3],
-        "TEMP",
-        app.temp_c.unwrap_or(0.0),
-        t.accent_orange,
+
+    let net_text = format!(
+        "↓{}/s ↑{}/s",
+        format_bytes(app.net_down_bps),
+        format_bytes(app.net_up_bps)
+    );
+    let temp_state = match app.temp_c {
+        Some(temp) if temp >= 80.0 => "Hot",
+        Some(temp) if temp >= 70.0 => "Warm",
+        Some(_) => "Normal",
+        None => "No sensor",
+    };
+    let temp_text = format!("{} {}", fmt_temp(app.temp_c), temp_state);
+    if tall {
+        render_stat_line(frame, rows[3], "NET ", &net_text, t.accent_teal);
+        render_stat_line(
+            frame,
+            rows[4],
+            "TEMP ",
+            &temp_text,
+            severity_color(Severity::from_usage(app.temp_c.unwrap_or(0.0))),
+        );
+    } else {
+        let combined = format!("{net_text} · {temp_text}");
+        render_stat_line(frame, rows[3], "", &combined, t.overlay1);
+    }
+    render_process_bars(frame, chunks[1], app);
+}
+
+fn render_stat_line(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    text: &str,
+    color: ratatui::style::Color,
+) {
+    let mut line = String::from(label);
+    line.push_str(&truncate(
+        text,
+        (area.width as usize).saturating_sub(label.len()).max(4),
+    ));
+    frame.render_widget(
+        Paragraph::new(Span::styled(line, Style::default().fg(color))),
+        area,
     );
 }
 
@@ -893,7 +912,7 @@ fn render_process_bars(frame: &mut Frame, area: Rect, app: &AppState) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 truncate(&process.name, name_width as usize),
-                Style::default().fg(t.overlay0),
+                Style::default().fg(t.overlay1),
             )),
             cols[0],
         );
@@ -926,39 +945,36 @@ fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
     let health_sev = Severity::from_health(app.health_score as f64);
     let mut lines: Vec<Line> = Vec::new();
+    // Narrow panels show titles only; details would wrap mid-word.
+    let show_detail = area.width >= 32;
 
     if let Some(cause) = app.root_causes.first() {
         let cause_sev = cause.severity;
-        lines.push(Line::from(vec![
+        let mut spans = vec![
+            severity_chip(cause_sev),
             Span::styled(
-                format!("{} ", cause_sev.symbol()),
+                format!(" {}", truncate(&cause.title, 14)),
                 Style::default()
                     .fg(severity_color(cause_sev))
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                truncate(&cause.title, 14),
-                Style::default()
-                    .fg(severity_color(cause_sev))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default()),
-            Span::styled(truncate(&cause.detail, 30), Style::default().fg(t.text)),
-        ]));
+        ];
+        if show_detail {
+            spans.push(Span::styled(
+                format!(" — {}", truncate(&cause.detail, 30)),
+                Style::default().fg(t.text),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
 
     if let Some(unit) = app.failed_units.first() {
         lines.push(Line::from(vec![
+            severity_chip(Severity::Critical),
             Span::styled(
-                "\u{26a0} ",
+                format!(" {}", truncate(&unit.unit, 14)),
                 Style::default()
-                    .fg(t.accent_orange)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                truncate(&unit.unit, 14),
-                Style::default()
-                    .fg(t.accent_orange)
+                    .fg(severity_color(Severity::Critical))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -969,18 +985,13 @@ fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     if let Some(drive) = app.storage_health.iter().find(|d| d.risk != Severity::Ok) {
-        let temp = drive
-            .temp_c
-            .map(|v| format!("{v:.0}\u{b0}"))
-            .unwrap_or_else(|| "\u{2014}".into());
+        let temp = fmt_temp(drive.temp_c);
         lines.push(Line::from(vec![
+            severity_chip(drive.risk),
             Span::styled(
-                format!("{} ", drive.risk.symbol()),
-                Style::default()
-                    .fg(severity_color(drive.risk))
-                    .add_modifier(Modifier::BOLD),
+                format!(" {}", truncate(&drive.device, 10)),
+                Style::default().fg(t.text),
             ),
-            Span::styled(truncate(&drive.device, 10), Style::default().fg(t.text)),
             Span::styled(
                 format!(" {temp} {}", truncate(&drive.model, 12)),
                 Style::default().fg(t.overlay1),
@@ -988,66 +999,65 @@ fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
         ]));
     }
 
+    // GPU context lives on the GPU tab + KPI: only surface it here when hot.
     if let Some(gpu) = app.primary_gpu() {
-        let usage = gpu
-            .usage_pct
-            .map(|v| format!("{v:.0}%"))
-            .unwrap_or_else(|| "\u{2014}".into());
-        let temp = gpu
-            .temp_c
-            .map(|v| format!("{v:.0}\u{b0}"))
-            .unwrap_or_else(|| "\u{2014}".into());
-        lines.push(Line::from(vec![
-            Span::styled(
-                "\u{25a6} ",
-                Style::default()
-                    .fg(t.accent_purple)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{} {}", gpu.kind, truncate(&gpu.model, 16)),
-                Style::default()
-                    .fg(t.accent_purple)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" {usage} {temp}"), Style::default().fg(t.overlay1)),
-        ]));
+        let hot = gpu.temp_c.is_some_and(|temp| temp >= 85.0)
+            || gpu.usage_pct.is_some_and(|usage| usage >= 90.0);
+        if hot {
+            lines.push(Line::from(vec![
+                severity_chip(Severity::Warn),
+                Span::styled(
+                    format!(" {} {}", gpu.kind, truncate(&gpu.model, 16)),
+                    Style::default()
+                        .fg(severity_color(Severity::Warn))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        " {} {}",
+                        fmt_pct0(gpu.usage_pct.unwrap_or(0.0)),
+                        fmt_temp(gpu.temp_c)
+                    ),
+                    Style::default().fg(t.overlay1),
+                ),
+            ]));
+        }
     }
 
     for event in app.events.iter().rev().take(2) {
-        lines.push(Line::from(vec![
+        let mut spans = vec![
+            severity_chip(event.severity),
             Span::styled(
-                format!("{} ", event.severity.symbol()),
-                Style::default()
-                    .fg(severity_color(event.severity))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                truncate(&event.title, 14),
+                format!(" {}", truncate(&event.title, 14)),
                 Style::default().fg(severity_color(event.severity)),
             ),
-            Span::styled(" ", Style::default()),
-            Span::styled(truncate(&event.detail, 28), Style::default().fg(t.overlay1)),
-        ]));
+        ];
+        if show_detail {
+            spans.push(Span::styled(
+                format!(" — {}", truncate(&event.detail, 28)),
+                Style::default().fg(t.overlay1),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
 
     let alert_budget = (area.height as usize)
         .saturating_sub(lines.len() + 2)
         .min(3);
     for alert in app.alerts.iter().take(alert_budget) {
-        let (icon, color) = if alert.starts_with('\u{26a1}') {
-            ("\u{26a1}", t.accent_red)
+        let sev = if alert.starts_with('\u{26a1}') {
+            Severity::Critical
         } else if alert.starts_with('\u{26a0}') {
-            ("\u{26a0}", t.accent_orange)
+            Severity::Warn
         } else {
-            ("\u{2713}", t.accent_green)
+            Severity::Ok
         };
         lines.push(Line::from(vec![
+            severity_chip(sev),
             Span::styled(
-                format!("{icon} "),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                format!(" {}", truncate(alert, 38)),
+                Style::default().fg(t.text),
             ),
-            Span::styled(truncate(alert, 38), Style::default().fg(color)),
         ]));
     }
 
@@ -1077,15 +1087,6 @@ fn render_alerts_inline(frame: &mut Frame, area: Rect, app: &AppState) {
     render_alerts_visual(frame, area, app);
 }
 
-fn severity_label(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Ok => "OK",
-        Severity::Warn => "WARN",
-        Severity::Critical => "CRIT",
-        Severity::Neutral => "INFO",
-    }
-}
-
 fn visual_ratio(value: f64, width: u16) -> f64 {
     let ratio = (value / 100.0).clamp(0.0, 1.0);
     if value > 0.0 && width > 0 {
@@ -1097,7 +1098,7 @@ fn visual_ratio(value: f64, width: u16) -> f64 {
 
 fn format_memory_detail(used_mb: f64, total_mb: f64) -> String {
     format!(
-        "{} / {} GiB",
+        "{}/{}GiB",
         format_truncated_gib(used_mb),
         format_truncated_gib(total_mb)
     )
@@ -1106,18 +1107,6 @@ fn format_memory_detail(used_mb: f64, total_mb: f64) -> String {
 fn format_truncated_gib(value_mb: f64) -> String {
     let gib = (value_mb.max(0.0) / 1024.0 * 100.0).floor() / 100.0;
     format!("{gib:.2}")
-}
-
-fn status_dot(value: f64) -> &'static str {
-    if value >= 85.0 {
-        "spike"
-    } else if value >= 60.0 {
-        "busy"
-    } else if value > 0.0 {
-        "live"
-    } else {
-        "idle"
-    }
 }
 
 #[cfg(test)]

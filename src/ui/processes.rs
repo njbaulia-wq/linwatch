@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Paragraph, Row, Table, TableState},
@@ -37,7 +37,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
 
     let summary_line = Line::from(vec![
         styled(format!("\u{2630} {} processes", app.process_count), t.text),
-        styled("  Sort: ", t.overlay0),
+        styled("  Sort: ", t.overlay1),
         styled(app.process_sort.label(), t.accent_blue).add_modifier(Modifier::BOLD),
         styled(
             "  [S] sort  [/] search  [K] terminate  [\u{2191}/\u{2193}] select",
@@ -64,7 +64,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             ),
             Span::styled(
                 "  (Enter closes, Esc clears)",
-                Style::default().fg(t.overlay0),
+                Style::default().fg(t.overlay1),
             ),
         ]);
         frame.render_widget(Paragraph::new(search_line), header_chunks[1]);
@@ -79,7 +79,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  Status: ", Style::default().fg(t.overlay0)),
+                Span::styled("  Status: ", Style::default().fg(t.overlay1)),
                 Span::styled(
                     message.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -149,7 +149,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                 )),
                 Cell::from(Span::styled(
                     format!("{:>7.1}M", p.mem_mb),
-                    Style::default().fg(t.overlay0),
+                    Style::default().fg(t.overlay1),
                 )),
             ];
             if show_thr {
@@ -161,7 +161,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             if show_state {
                 cells.push(Cell::from(Span::styled(
                     truncate(&p.state, 10),
-                    Style::default().fg(t.overlay0),
+                    Style::default().fg(t.overlay1),
                 )));
             }
             cells.push(Cell::from(Span::styled(
@@ -181,7 +181,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                 cells.push(Cell::from(Span::styled(
                     truncate(&p.reason, 16),
                     Style::default().fg(if p.reason == "Normal" {
-                        t.overlay0
+                        t.overlay1
                     } else if is_dev {
                         t.accent_teal
                     } else {
@@ -200,31 +200,9 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         })
         .collect::<Vec<_>>();
 
-    if let Some(pid) = app.confirm_kill_pid {
-        let name = app.confirm_kill_name.as_deref().unwrap_or("unknown");
-        let confirm_text = Line::from(vec![
-            Span::styled(
-                format!("  Send SIGTERM to PID {pid} ({name})? "),
-                Style::default()
-                    .fg(t.accent_red)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("[K] confirm  ", Style::default().fg(t.accent_red)),
-            Span::styled("[Esc] cancel", Style::default().fg(t.overlay0)),
-        ]);
-        frame.render_widget(
-            Paragraph::new(confirm_text).block(panel_block_severity(
-                "\u{26a0} Confirm Terminate",
-                crate::types::Severity::Critical,
-            )),
-            chunks[1],
-        );
-        return;
-    }
-
     if p_rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("No process data").block(panel_block("\u{2630} Process List")),
+            Paragraph::new("No process data").block(panel_block("☰ Process List")),
             chunks[1],
         );
     } else {
@@ -273,12 +251,47 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         frame.render_stateful_widget(
             Table::new(p_rows, widths)
                 .header(Row::new(header_cells))
-                .block(panel_block("\u{2630} Process List"))
+                .block(panel_block("☰ Process List"))
                 .column_spacing(1)
                 .highlight_style(highlight_style)
                 .highlight_symbol("  \u{25b6} "),
             chunks[1],
             table_state,
+        );
+    }
+
+    // Confirm dialog floats over the table so selection context stays visible.
+    if let Some(pid) = app.confirm_kill_pid {
+        let name = app.confirm_kill_name.as_deref().unwrap_or("unknown");
+        let popup_w = chunks[1].width.saturating_sub(4).clamp(24, 56);
+        let popup_h = 5.min(chunks[1].height.max(3));
+        let popup = Rect {
+            x: chunks[1].x + (chunks[1].width.saturating_sub(popup_w)) / 2,
+            y: chunks[1].y + (chunks[1].height.saturating_sub(popup_h)) / 2,
+            width: popup_w,
+            height: popup_h,
+        };
+        let confirm_text = vec![
+            Line::from(Span::styled(
+                format!(" Send SIGTERM to PID {pid} ({name})?"),
+                Style::default()
+                    .fg(t.accent_red)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("[K] confirm  ", Style::default().fg(t.accent_red)),
+                Span::styled("[Esc] cancel", Style::default().fg(t.overlay1)),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(confirm_text)
+                .alignment(Alignment::Center)
+                .block(panel_block_severity(
+                    "⚠ Confirm Terminate",
+                    crate::types::Severity::Critical,
+                )),
+            popup,
         );
     }
 }

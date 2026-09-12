@@ -18,12 +18,26 @@ pub fn footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &AppState) {
         " H-help "
     };
 
+    // Keys in accent, descriptions dim: scannable at a glance.
+    let key = |s: &str| {
+        Span::styled(
+            s.to_string(),
+            Style::default()
+                .fg(t.accent_teal)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    let desc = |s: &str| Span::styled(s.to_string(), Style::default().fg(t.overlay1));
+    let help = format!("|{}| ", help_label.trim());
+
     // Three density levels so the bar never clips mid-word on narrow screens.
     let text = if app.terminal_width < 64 {
         Line::from(vec![
-            Span::styled("Q ", Style::default().fg(t.overlay0)),
-            Span::styled("| R ", Style::default().fg(t.overlay0)),
-            Span::styled(format!("|{help_label}"), Style::default().fg(t.overlay0)),
+            key("Q"),
+            desc(" | "),
+            key("R"),
+            desc(" "),
+            Span::styled(help.clone(), Style::default().fg(t.overlay1)),
             Span::styled(
                 app.refresh_label(),
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
@@ -35,11 +49,14 @@ pub fn footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &AppState) {
         ])
     } else if app.terminal_width < 100 {
         Line::from(vec![
-            Span::styled("Q Exit ", Style::default().fg(t.overlay0)),
-            Span::styled("| R Refresh ", Style::default().fg(t.overlay0)),
-            Span::styled("| Tab View ", Style::default().fg(t.overlay0)),
-            Span::styled(format!("|{help_label}"), Style::default().fg(t.overlay0)),
-            Span::styled("| Interval ", Style::default().fg(t.overlay0)),
+            key("Q"),
+            desc(" Exit | "),
+            key("R"),
+            desc(" Refresh | "),
+            key("Tab"),
+            desc(" View "),
+            Span::styled(help.clone(), Style::default().fg(t.overlay1)),
+            desc("Interval "),
             Span::styled(
                 app.refresh_label(),
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
@@ -59,18 +76,23 @@ pub fn footer(frame: &mut Frame, area: ratatui::layout::Rect, app: &AppState) {
         ])
     } else {
         let mut spans = vec![
-            Span::styled("Q Exit ", Style::default().fg(t.overlay0)),
-            Span::styled("| R Refresh now ", Style::default().fg(t.overlay0)),
-            Span::styled("| Tab Switch view ", Style::default().fg(t.overlay0)),
-            Span::styled(format!("|{help_label}"), Style::default().fg(t.overlay0)),
-            Span::styled("| S Sort process ", Style::default().fg(t.overlay0)),
-            Span::styled("| Up/Down Select ", Style::default().fg(t.overlay0)),
-            Span::styled("| Interval ", Style::default().fg(t.overlay1)),
+            key("Q"),
+            desc(" Exit | "),
+            key("R"),
+            desc(" Refresh now | "),
+            key("Tab"),
+            desc(" Switch view "),
+            Span::styled(help.clone(), Style::default().fg(t.overlay1)),
+            key("S"),
+            desc(" Sort process | "),
+            key("Up/Down"),
+            desc(" Select | "),
+            desc("Interval "),
             Span::styled(
                 format!("{} ", app.refresh_label()),
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("| Network ", Style::default().fg(t.overlay1)),
+            desc("Network "),
             Span::styled(
                 format!("Down {}/s ", format_bytes(app.net_down_bps)),
                 Style::default().fg(t.accent_teal),

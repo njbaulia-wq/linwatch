@@ -32,7 +32,8 @@ pub fn catppuccin_mocha() -> Theme {
         surface1: Color::Rgb(69, 71, 90),
         surface2: Color::Rgb(88, 91, 112),
         overlay0: Color::Rgb(108, 112, 134),
-        overlay1: Color::Rgb(127, 132, 156),
+        // 4.75:1 on bg_panel — minimum for secondary text (measured).
+        overlay1: Color::Rgb(132, 137, 162),
         overlay2: Color::Rgb(147, 153, 178),
         subtext0: Color::Rgb(166, 173, 200),
         subtext1: Color::Rgb(186, 194, 222),
@@ -128,11 +129,42 @@ mod tests {
     #[test]
     fn accessible_themes_meet_contrast_targets() {
         for theme in [high_contrast(), colorblind_safe()] {
-            for color in [
+            // Accessible themes keep even dim text above AA.
+            assert_body_contrast(
+                &theme,
+                4.5,
+                &[
+                    theme.text,
+                    theme.subtext0,
+                    theme.subtext1,
+                    theme.overlay0,
+                    theme.overlay1,
+                    theme.overlay2,
+                    theme.accent_blue,
+                    theme.accent_teal,
+                    theme.accent_yellow,
+                    theme.accent_green,
+                    theme.accent_red,
+                    theme.accent_orange,
+                    theme.accent_purple,
+                ],
+            );
+            assert!(contrast_ratio(theme.border, theme.bg_panel) >= 3.0);
+        }
+    }
+
+    #[test]
+    fn default_theme_body_text_meets_aa() {
+        // overlay0 (~3.4:1) stays decorative-only in the default theme;
+        // everything that carries information must clear AA.
+        let theme = catppuccin_mocha();
+        assert_body_contrast(
+            &theme,
+            4.5,
+            &[
                 theme.text,
                 theme.subtext0,
                 theme.subtext1,
-                theme.overlay0,
                 theme.overlay1,
                 theme.overlay2,
                 theme.accent_blue,
@@ -142,16 +174,19 @@ mod tests {
                 theme.accent_red,
                 theme.accent_orange,
                 theme.accent_purple,
-            ] {
-                assert!(
-                    contrast_ratio(color, theme.bg_panel) >= 4.5,
-                    "contrast {:?} on {:?} is {:.2}",
-                    color,
-                    theme.bg_panel,
-                    contrast_ratio(color, theme.bg_panel)
-                );
-            }
-            assert!(contrast_ratio(theme.border, theme.bg_panel) >= 3.0);
+            ],
+        );
+    }
+
+    fn assert_body_contrast(theme: &Theme, min_ratio: f64, colors: &[Color]) {
+        for color in colors {
+            assert!(
+                contrast_ratio(*color, theme.bg_panel) >= min_ratio,
+                "contrast {:?} on {:?} is {:.2}",
+                color,
+                theme.bg_panel,
+                contrast_ratio(*color, theme.bg_panel)
+            );
         }
     }
 

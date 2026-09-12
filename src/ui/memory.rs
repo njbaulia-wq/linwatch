@@ -81,11 +81,11 @@ pub fn memory_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                     app.swap_total,
                     app.swap_pct()
                 ),
-                t.overlay0,
+                t.overlay1,
             ),
         ]),
         Line::from(vec![
-            styled("\u{2603} Temp: ", t.overlay0),
+            styled("\u{2603} Temp: ", t.overlay1),
             styled(
                 app.temp_c
                     .map(|temp| format!("{temp:.1}\u{b0}C"))

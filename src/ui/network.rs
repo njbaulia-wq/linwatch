@@ -128,7 +128,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
             let service_color = if p.service_name != "Other" {
                 t.accent_teal
             } else {
-                t.overlay0
+                t.overlay1
             };
             Row::new(vec![
                 Cell::from(p.proto.as_str()),

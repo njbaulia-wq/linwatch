@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Axis, Chart, GraphType, LineGauge, Paragraph},
+    widgets::{Axis, Chart, GraphType, Paragraph},
     Frame,
 };
 
@@ -37,14 +37,14 @@ pub fn cpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         ),
         Span::styled(
             format!("Cores: {}  ", app.system.cpu_count),
-            Style::default().fg(t.overlay0),
+            Style::default().fg(t.overlay1),
         ),
         Span::styled(
             format!(
                 "\u{25a0} Load: {} {} {}",
                 app.load_avg[0], app.load_avg[1], app.load_avg[2]
             ),
-            Style::default().fg(t.overlay0),
+            Style::default().fg(t.overlay1),
         ),
     ]);
     frame.render_widget(
@@ -52,45 +52,67 @@ pub fn cpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         chunks[0],
     );
 
-    let bar_area = chunks[1].inner(&Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
-    if bar_area.height == 0 || bar_area.width < 12 {
-        // Too small for gauges: the trend chart below still carries the signal.
-    } else {
-        let total_cores = app.core_usages.len();
-        let cores_to_show = total_cores.min((bar_area.height as usize) / 2 * 2).max(1);
-        let hidden = total_cores.saturating_sub(cores_to_show);
-        let bar_height = (bar_area.height / cores_to_show.max(1) as u16).max(1);
+    // One bordered panel, one compact row per core — N boxed gauges was
+    // mostly border ink. Bars use block characters scaled to the row width.
+    let block = panel_block(" CPU Cores ");
+    let bar_area = block.inner(chunks[1]);
+    frame.render_widget(block, chunks[1]);
 
-        let bars = Layout::default()
+    let total_cores = app.core_usages.len();
+    if total_cores == 0 {
+        frame.render_widget(
+            Paragraph::new(dim("No per-core data yet")),
+            bar_area.inner(&Margin {
+                horizontal: 2,
+                vertical: 1,
+            }),
+        );
+    } else if bar_area.height == 0 || bar_area.width < 14 {
+        // Too small for bars: the trend chart below still carries the signal.
+    } else {
+        let mut shown = total_cores.min(bar_area.height as usize).max(1);
+        let hidden = total_cores.saturating_sub(shown);
+        // Reserve the last row for the overflow note when clamped.
+        let overflow_row = hidden > 0 && shown > 1;
+        if overflow_row {
+            shown -= 1;
+        }
+        let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
-                (0..cores_to_show)
-                    .map(|_| Constraint::Length(bar_height))
+                (0..shown + usize::from(overflow_row))
+                    .map(|_| Constraint::Length(1))
                     .collect::<Vec<_>>(),
             )
             .split(bar_area);
 
-        for (i, &usage) in app.core_usages.iter().enumerate().take(bars.len()) {
+        for (i, &usage) in app.core_usages.iter().enumerate().take(shown) {
             let sev = Severity::from_usage(usage);
-            let color = severity_color(sev);
-            let more = if hidden > 0 && i + 1 == bars.len() {
-                format!(" (+{hidden} more)")
-            } else {
-                String::new()
-            };
-            let gauge = LineGauge::default()
-                .block(ratatui::widgets::Block::default().title(format!(
-                    "{} Core {i} {:>5.1}%{more}",
-                    sev.symbol(),
-                    usage
-                )))
-                .gauge_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-                .line_set(ratatui::symbols::line::THICK)
-                .ratio((usage / 100.0).clamp(0.0, 1.0));
-            frame.render_widget(gauge, bars[i]);
+            let row_cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(12), Constraint::Min(6)])
+                .split(rows[i]);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!("C{i:<3}{usage:>5.1}%"),
+                    Style::default().fg(severity_color(sev)),
+                )),
+                row_cols[0],
+            );
+            let bar_w = row_cols[1].width as usize;
+            let filled = ((usage / 100.0).clamp(0.0, 1.0) * bar_w as f64).round() as usize;
+            let filled = filled.min(bar_w);
+            let bar: String = "█".repeat(filled) + &"░".repeat(bar_w.saturating_sub(filled));
+            frame.render_widget(
+                Paragraph::new(Span::styled(bar, Style::default().fg(severity_color(sev)))),
+                row_cols[1],
+            );
+        }
+        if overflow_row {
+            frame.render_widget(
+                Paragraph::new(dim(format!("+{hidden} more cores"))),
+                rows[shown],
+            );
         }
     }
 

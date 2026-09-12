@@ -41,7 +41,7 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
         )
     } else {
         format!(
-            "System health dashboard | Host: {} | {} {} | Sec: {}",
+            "Host: {} | {} {} | Sec: {}",
             app.system.hostname, app.system.os_name, app.system.os_version, app.system.selinux_mode
         )
     };
@@ -66,10 +66,7 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
     let health_sev = crate::types::Severity::from_health(app.health_score as f64);
     let health_color = common::severity_color(health_sev);
     let sample_color = common::sample_status_color(app.sample_status());
-    let temp_value = app
-        .temp_c
-        .map(|temp| format!("{temp:.0}\u{b0}C"))
-        .unwrap_or_else(|| String::from("N/A"));
+    let temp_value = common::fmt_temp(app.temp_c);
     let temp_state = match app.temp_c {
         Some(temp) if temp >= 80.0 => "Hot",
         Some(temp) if temp >= 70.0 => "Warm",
@@ -98,17 +95,14 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
     };
 
     let mut health_spans = vec![
+        common::severity_chip(health_sev),
         Span::styled(
-            format!(
-                "{} {status_label} {}%  ",
-                health_sev.symbol(),
-                app.health_score
-            ),
+            format!(" {status_label} {}%  ", app.health_score),
             Style::default()
                 .fg(health_color)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Data ", Style::default().fg(t.overlay0)),
+        common::dim("Data "),
         Span::styled(
             app.sample_status(),
             Style::default()
@@ -120,7 +114,7 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
         health_spans.push(Span::styled("  Updated ", Style::default().fg(t.overlay1)));
         health_spans.push(Span::styled(
             format!("{:.1}s", app.last_sample_at.elapsed().as_secs_f64()),
-            Style::default().fg(t.overlay0),
+            Style::default().fg(t.overlay1),
         ));
     }
     let health_line = Line::from(health_spans);
@@ -159,21 +153,18 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
     );
 
     let right_block = common::panel_block("").borders(ratatui::widgets::Borders::NONE);
+    // Two lines max: health first, one merged context line after.
     let right_lines = vec![
-        Line::from(Span::styled(
-            common::truncate(&context, right_w.max(8)),
-            Style::default().fg(t.overlay1),
-        )),
         health_line,
         Line::from(Span::styled(
             common::truncate(
                 &format!(
-                    "CPU: {} cores | Processes: {} | Uptime: {}",
+                    "{context} | {} cores · {} procs · Up {}",
                     app.system.cpu_count, app.process_count, app.uptime
                 ),
                 right_w.max(8),
             ),
-            Style::default().fg(t.overlay0),
+            Style::default().fg(t.overlay1),
         )),
     ];
     frame.render_widget(

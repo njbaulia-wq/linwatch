@@ -29,8 +29,60 @@ pub fn panel_block_severity(title: impl Into<String>, severity: Severity) -> Blo
         .style(Style::default().bg(t.bg_panel))
 }
 
+/// Borderless group container. Prefer this for metric groups so ink goes to
+/// data, not chrome; reserve `panel_block` for verdict/alerts/focus panels.
+pub fn flat_panel(title: impl Into<String>) -> Block<'static> {
+    let t = theme::get();
+    Block::default()
+        .title(title.into())
+        .borders(Borders::NONE)
+        .style(Style::default().bg(t.bg_panel))
+}
+
 pub fn styled(text: impl Into<String>, color: Color) -> Span<'static> {
     Span::styled(text.into(), Style::default().fg(color))
+}
+
+/// Dim supporting text. Uses overlay1 (AA-passing); overlay0 is
+/// decorative-only and must not carry information.
+pub fn dim(text: impl Into<String>) -> Span<'static> {
+    styled(text, theme::get().overlay1)
+}
+
+/// One-decimal percent for body values: `45.2%`.
+pub fn fmt_pct1(value: f64) -> String {
+    format!("{value:.1}%")
+}
+
+/// Whole percent for tiny gauges: `45%`.
+pub fn fmt_pct0(value: f64) -> String {
+    format!("{value:.0}%")
+}
+
+/// Temperature or honest N/A — never a fake `0.0°`.
+pub fn fmt_temp(temp: Option<f64>) -> String {
+    temp.map(|v| format!("{v:.0}\u{b0}"))
+        .unwrap_or_else(|| String::from("N/A"))
+}
+
+/// Single-source severity mark: symbol in severity color, bold.
+/// Always pair with `severity_word`, never color alone.
+pub fn severity_chip(severity: Severity) -> Span<'static> {
+    Span::styled(
+        severity.symbol(),
+        Style::default()
+            .fg(severity_color(severity))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+pub fn severity_word(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Ok => "OK",
+        Severity::Warn => "WARN",
+        Severity::Critical => "CRIT",
+        Severity::Neutral => "N/A",
+    }
 }
 
 pub fn severity_color(severity: Severity) -> Color {
@@ -150,11 +202,12 @@ pub fn sparkline_chars(value: f64) -> &'static str {
 }
 
 pub fn header_col(text: &str) -> Span<'static> {
+    // Bold only: underlines double the ink on every table for no new meaning.
     Span::styled(
         text.to_string(),
         Style::default()
             .fg(theme::get().overlay1)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            .add_modifier(Modifier::BOLD),
     )
 }
 
