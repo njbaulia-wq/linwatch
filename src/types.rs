@@ -388,6 +388,7 @@ pub enum Severity {
     Ok,
     Warn,
     Critical,
+    #[allow(dead_code)]
     Neutral,
 }
 
