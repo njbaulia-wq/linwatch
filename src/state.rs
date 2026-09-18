@@ -13,6 +13,10 @@ pub struct AppState {
     pub previous_cpu: Option<CpuSnapshot>,
     pub mem_total: f64,
     pub mem_used: f64,
+    pub mem_available: f64,
+    pub mem_free: f64,
+    pub mem_cached: f64,
+    pub mem_buffers: f64,
     pub mem_history: VecDeque<(f64, f64)>,
     pub swap_total: f64,
     pub swap_used: f64,
@@ -30,6 +34,10 @@ pub struct AppState {
     pub previous_net: Option<(NetworkCounters, Instant)>,
     pub disk_io: Vec<DiskIoInfo>,
     pub previous_disk_io: Option<(DiskIoCounters, Instant)>,
+    pub disk_read_bps: f64,
+    pub disk_write_bps: f64,
+    pub disk_read_history: VecDeque<(f64, f64)>,
+    pub disk_write_history: VecDeque<(f64, f64)>,
     pub gpus: Vec<GpuInfo>,
     pub previous_gpu_rc6: Option<(GpuRc6Counters, Instant)>,
     pub gpu_usage_history: VecDeque<(f64, f64)>,
@@ -102,13 +110,19 @@ impl AppState {
             previous_cpu: None,
             mem_total: 1.0,
             mem_used: 0.0,
+            mem_available: 1.0,
+            mem_free: 1.0,
+            mem_cached: 0.0,
+            mem_buffers: 0.0,
             mem_history: VecDeque::with_capacity(HISTORY_LIMIT),
             swap_total: 0.0,
             swap_used: 0.0,
             disk: DiskInfo {
                 mount_point: String::from("/"),
+                fs_type: String::from("ext4"),
                 used_gb: 0.0,
                 total_gb: 0.0,
+                free_gb: 0.0,
                 pct: 0,
             },
             mounts: Vec::new(),
@@ -128,6 +142,10 @@ impl AppState {
             previous_net: None,
             disk_io: Vec::new(),
             previous_disk_io: None,
+            disk_read_bps: 0.0,
+            disk_write_bps: 0.0,
+            disk_read_history: VecDeque::with_capacity(HISTORY_LIMIT),
+            disk_write_history: VecDeque::with_capacity(HISTORY_LIMIT),
             gpus: Vec::new(),
             previous_gpu_rc6: None,
             gpu_usage_history: VecDeque::with_capacity(HISTORY_LIMIT),
@@ -492,6 +510,10 @@ impl AppState {
         if let Some(mem) = self.capture("memory", collector::read_mem_info()) {
             self.mem_total = mem.total_mb.max(1.0);
             self.mem_used = mem.used_mb.max(0.0);
+            self.mem_available = mem.available_mb.max(0.0);
+            self.mem_free = mem.free_mb.max(0.0);
+            self.mem_cached = mem.cached_mb.max(0.0);
+            self.mem_buffers = mem.buffers_mb.max(0.0);
             self.swap_total = mem.swap_total_mb.max(0.0);
             self.swap_used = mem.swap_used_mb.max(0.0);
         }
@@ -698,6 +720,13 @@ impl AppState {
                         }
                     })
                     .collect();
+
+                let total_read: f64 = self.disk_io.iter().map(|d| d.read_bps).sum();
+                let total_write: f64 = self.disk_io.iter().map(|d| d.write_bps).sum();
+                self.disk_read_bps = total_read;
+                self.disk_write_bps = total_write;
+                push_history(&mut self.disk_read_history, self.counter, total_read);
+                push_history(&mut self.disk_write_history, self.counter, total_write);
             }
             self.previous_disk_io = Some((current, now));
         }
@@ -1034,8 +1063,10 @@ fn sustained_suffix(ticks: u8) -> String {
 fn empty_disk_info() -> DiskInfo {
     DiskInfo {
         mount_point: String::from("/"),
+        fs_type: String::from("ext4"),
         used_gb: 0.0,
         total_gb: 0.0,
+        free_gb: 0.0,
         pct: 0,
     }
 }
@@ -1420,13 +1451,19 @@ mod tests {
             previous_cpu: None,
             mem_total: 1.0,
             mem_used: 0.0,
+            mem_available: 1.0,
+            mem_free: 1.0,
+            mem_cached: 0.0,
+            mem_buffers: 0.0,
             mem_history: VecDeque::new(),
             swap_total: 0.0,
             swap_used: 0.0,
             disk: DiskInfo {
                 mount_point: "/".into(),
+                fs_type: "ext4".into(),
                 used_gb: 0.0,
                 total_gb: 1.0,
+                free_gb: 1.0,
                 pct: 0,
             },
             mounts: Vec::new(),
@@ -1442,6 +1479,10 @@ mod tests {
             previous_net: None,
             disk_io: Vec::new(),
             previous_disk_io: None,
+            disk_read_bps: 0.0,
+            disk_write_bps: 0.0,
+            disk_read_history: VecDeque::new(),
+            disk_write_history: VecDeque::new(),
             gpus: Vec::new(),
             previous_gpu_rc6: None,
             gpu_usage_history: VecDeque::new(),
@@ -1525,8 +1566,10 @@ mod tests {
         app.swap_used = 0.0;
         app.disk = DiskInfo {
             mount_point: "/".into(),
+            fs_type: "ext4".into(),
             used_gb: 50.0,
             total_gb: 500.0,
+            free_gb: 450.0,
             pct: 10,
         };
         app.temp_c = Some(45.0);
@@ -1544,8 +1587,10 @@ mod tests {
         app.swap_used = 0.0;
         app.disk = DiskInfo {
             mount_point: "/".into(),
+            fs_type: "ext4".into(),
             used_gb: 50.0,
             total_gb: 500.0,
+            free_gb: 450.0,
             pct: 10,
         };
         app.temp_c = Some(45.0);
@@ -1563,8 +1608,10 @@ mod tests {
         app.swap_used = 500.0;
         app.disk = DiskInfo {
             mount_point: "/".into(),
+            fs_type: "ext4".into(),
             used_gb: 50.0,
             total_gb: 500.0,
+            free_gb: 450.0,
             pct: 10,
         };
         app.temp_c = Some(45.0);
@@ -1596,8 +1643,10 @@ mod tests {
         app.swap_used = 100.0;
         app.disk = DiskInfo {
             mount_point: "/".into(),
+            fs_type: "ext4".into(),
             used_gb: 90.0,
             total_gb: 100.0,
+            free_gb: 10.0,
             pct: 90,
         };
         app.temp_c = Some(100.0);

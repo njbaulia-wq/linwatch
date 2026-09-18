@@ -528,9 +528,19 @@ fn parse_mem_info(content: &str) -> Option<MemInfo> {
         }
     };
 
+    let available_kb = if has_available {
+        mem_available
+    } else {
+        mem_free + buffers + cached + sreclaimable
+    };
+
     (mem_total > 0.0).then_some(MemInfo {
         total_mb: mem_total / 1024.0,
         used_mb: used_kb.max(0.0) / 1024.0,
+        available_mb: available_kb.max(0.0) / 1024.0,
+        free_mb: mem_free / 1024.0,
+        cached_mb: (cached + sreclaimable) / 1024.0,
+        buffers_mb: buffers / 1024.0,
         swap_total_mb: swap_total / 1024.0,
         swap_used_mb: (swap_total - swap_free).max(0.0) / 1024.0,
     })
@@ -539,13 +549,13 @@ fn parse_mem_info(content: &str) -> Option<MemInfo> {
 #[must_use]
 pub fn read_disk_info() -> Option<Vec<DiskInfo>> {
     let mut mounts = important_mounts();
-    if !mounts.iter().any(|mount| mount == "/") {
-        mounts.insert(0, String::from("/"));
+    if !mounts.iter().any(|(m, _)| m == "/") {
+        mounts.insert(0, (String::from("/"), String::from("ext4")));
     }
 
     let mut infos = Vec::with_capacity(mounts.len());
-    for mount in mounts {
-        if let Some(info) = read_mount_info(&mount) {
+    for (mount, fs_type) in mounts {
+        if let Some(info) = read_mount_info(&mount, &fs_type) {
             infos.push(info);
         }
     }
@@ -561,7 +571,7 @@ pub fn primary_mount(mounts: &[DiskInfo]) -> Option<&DiskInfo> {
         .or_else(|| mounts.first())
 }
 
-fn important_mounts() -> Vec<String> {
+fn important_mounts() -> Vec<(String, String)> {
     // Filter by filesystem type (not an allowlist of paths) so extra data
     // mounts (/data, /mnt/*, NFS, btrfs subvolumes) are monitored too.
     const PSEUDO: &[&str] = &[
@@ -583,6 +593,9 @@ fn important_mounts() -> Vec<String> {
         "configfs",
         "securityfs",
         "hugetlbfs",
+        "pstore",
+        "autofs",
+        "bpf",
     ];
     let content = fs::read_to_string("/proc/mounts").unwrap_or_default();
     let mut mounts = Vec::new();
@@ -595,14 +608,14 @@ fn important_mounts() -> Vec<String> {
         if PSEUDO.contains(fs_type) {
             continue;
         }
-        mounts.push((*mount).to_string());
+        mounts.push(((*mount).to_string(), (*fs_type).to_string()));
     }
-    mounts.sort();
-    mounts.dedup();
+    mounts.sort_by(|a, b| a.0.cmp(&b.0));
+    mounts.dedup_by(|a, b| a.0 == b.0);
     mounts
 }
 
-fn read_mount_info(mount_point: &str) -> Option<DiskInfo> {
+fn read_mount_info(mount_point: &str, fs_type: &str) -> Option<DiskInfo> {
     let path = CString::new(mount_point).ok()?;
     let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     // SAFETY: statvfs is a POSIX read-only syscall that fills a caller-provided buffer.
@@ -625,8 +638,10 @@ fn read_mount_info(mount_point: &str) -> Option<DiskInfo> {
 
     Some(DiskInfo {
         mount_point: mount_point.to_string(),
+        fs_type: fs_type.to_string(),
         used_gb: used_bytes / 1024.0 / 1024.0 / 1024.0,
         total_gb: total_bytes / 1024.0 / 1024.0 / 1024.0,
+        free_gb: free_bytes / 1024.0 / 1024.0 / 1024.0,
         pct: pct.min(100),
     })
 }
@@ -1514,14 +1529,18 @@ mod tests {
         let mounts = vec![
             DiskInfo {
                 mount_point: String::from("/data"),
+                fs_type: String::from("ext4"),
                 used_gb: 1.0,
                 total_gb: 10.0,
+                free_gb: 9.0,
                 pct: 10,
             },
             DiskInfo {
                 mount_point: String::from("/"),
+                fs_type: String::from("ext4"),
                 used_gb: 5.0,
                 total_gb: 50.0,
+                free_gb: 45.0,
                 pct: 10,
             },
         ];

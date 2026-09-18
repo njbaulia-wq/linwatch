@@ -51,14 +51,20 @@ pub struct OpenPort {
 #[derive(Clone)]
 pub struct DiskInfo {
     pub mount_point: String,
+    pub fs_type: String,
     pub used_gb: f64,
     pub total_gb: f64,
+    pub free_gb: f64,
     pub pct: u16,
 }
 
 pub struct MemInfo {
     pub total_mb: f64,
     pub used_mb: f64,
+    pub available_mb: f64,
+    pub free_mb: f64,
+    pub cached_mb: f64,
+    pub buffers_mb: f64,
     pub swap_total_mb: f64,
     pub swap_used_mb: f64,
 }
@@ -149,7 +155,9 @@ pub struct StorageHealth {
     pub model: String,
     pub kind: String,
     pub temp_c: Option<f64>,
+    #[allow(dead_code)]
     pub critical_warning: Option<u64>,
+    #[allow(dead_code)]
     pub media_errors: Option<u64>,
     pub risk: Severity,
     pub note: String,
