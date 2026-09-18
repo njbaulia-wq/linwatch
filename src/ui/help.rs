@@ -56,6 +56,13 @@ pub fn help(frame: &mut Frame, area: Rect) {
             ),
         ]),
         Line::from(vec![
+            Span::styled(" Enter / I     ", Style::default().fg(t.accent_teal)),
+            Span::styled(
+                "Inspect process (memory, I/O, signals)",
+                Style::default().fg(t.subtext0),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled(" K             ", Style::default().fg(t.accent_teal)),
             Span::styled(
                 "Terminate process (SIGTERM / SIGKILL)",

@@ -70,6 +70,31 @@ pub fn run_app<B: Backend>(
                             }
                             _ => {}
                         }
+                    } else if app.inspect_process_pid.is_some() {
+                        match key.code {
+                            crossterm::event::KeyCode::Esc
+                            | crossterm::event::KeyCode::Char('i')
+                            | crossterm::event::KeyCode::Char('I')
+                            | crossterm::event::KeyCode::Enter => {
+                                app.close_inspector();
+                            }
+                            crossterm::event::KeyCode::Char('t')
+                            | crossterm::event::KeyCode::Char('T') => {
+                                app.send_inspected_signal(libc::SIGTERM);
+                            }
+                            crossterm::event::KeyCode::Char('9') => {
+                                app.send_inspected_signal(libc::SIGKILL);
+                            }
+                            crossterm::event::KeyCode::Char('p')
+                            | crossterm::event::KeyCode::Char('P') => {
+                                app.send_inspected_signal(libc::SIGSTOP);
+                            }
+                            crossterm::event::KeyCode::Char('c')
+                            | crossterm::event::KeyCode::Char('C') => {
+                                app.send_inspected_signal(libc::SIGCONT);
+                            }
+                            _ => {}
+                        }
                     } else {
                         match key.code {
                             crossterm::event::KeyCode::Esc => {
@@ -122,6 +147,16 @@ pub fn run_app<B: Backend>(
                             }
                             crossterm::event::KeyCode::Char('s')
                             | crossterm::event::KeyCode::Char('S') => app.process_sort.cycle(),
+                            crossterm::event::KeyCode::Char('i')
+                            | crossterm::event::KeyCode::Char('I') => {
+                                if app.active_tab == ViewTab::Processes {
+                                    if let Some(p) =
+                                        app.filtered_processes().get(app.process_selected)
+                                    {
+                                        app.open_inspector(p.pid);
+                                    }
+                                }
+                            }
                             crossterm::event::KeyCode::Char('/') => {
                                 if app.active_tab == ViewTab::Processes {
                                     app.is_search_mode = true;
@@ -145,11 +180,15 @@ pub fn run_app<B: Backend>(
                                 }
                             }
                             crossterm::event::KeyCode::Enter => {
-                                if app.active_tab == ViewTab::Processes
-                                    && app.confirm_kill_pid.is_some()
-                                {
-                                    app.request_kill_signal(libc::SIGTERM);
-                                    process_table_state.select(Some(app.process_selected));
+                                if app.active_tab == ViewTab::Processes {
+                                    if app.confirm_kill_pid.is_some() {
+                                        app.request_kill_signal(libc::SIGTERM);
+                                        process_table_state.select(Some(app.process_selected));
+                                    } else if let Some(p) =
+                                        app.filtered_processes().get(app.process_selected)
+                                    {
+                                        app.open_inspector(p.pid);
+                                    }
                                 }
                             }
                             crossterm::event::KeyCode::Char('9') => {

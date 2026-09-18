@@ -86,6 +86,10 @@ pub struct AppState {
     pub thermal_pressure_ticks: u8,
     pub previous_sample_status_label: String,
     pub previous_health_band: Severity,
+    pub inspect_process_pid: Option<u32>,
+    pub inspect_process_detail: Option<ProcessDetail>,
+    pub psi: Option<SystemPsi>,
+    pub hw_sensors: Vec<HwSensor>,
 }
 
 impl AppState {
@@ -194,6 +198,10 @@ impl AppState {
             thermal_pressure_ticks: 0,
             previous_sample_status_label: String::from("OK"),
             previous_health_band: Severity::Ok,
+            inspect_process_pid: None,
+            inspect_process_detail: None,
+            psi: None,
+            hw_sensors: Vec::new(),
         };
 
         state.update();
@@ -268,6 +276,7 @@ impl AppState {
             sample_status: self.sample_status().to_string(),
             environment: self.env.label().to_string(),
             security_mode: self.system.selinux_mode.clone(),
+            psi: self.psi,
         }
     }
 
@@ -580,6 +589,14 @@ impl AppState {
                 .unwrap_or_default();
         }
 
+        self.psi = collector::read_psi();
+        if self.tick_count == 1 || self.tick_count.is_multiple_of(THERMAL_READ_EVERY) {
+            self.hw_sensors = collector::read_hw_sensors();
+        }
+        if let Some(pid) = self.inspect_process_pid {
+            self.refresh_inspected_process(pid);
+        }
+
         if let Some(mut summary) = self.capture(
             "processes",
             collector::read_process_summary(
@@ -835,11 +852,171 @@ impl AppState {
         }
     }
 
+    pub fn open_inspector(&mut self, pid: u32) {
+        let name = self
+            .top_cpu_processes
+            .iter()
+            .chain(self.top_mem_processes.iter())
+            .find(|p| p.pid == pid)
+            .map(|p| p.name.as_str())
+            .unwrap_or("process");
+        self.inspect_process_detail = collector::read_process_detail(pid, name);
+        self.inspect_process_pid = Some(pid);
+    }
+
+    pub fn close_inspector(&mut self) {
+        self.inspect_process_pid = None;
+        self.inspect_process_detail = None;
+    }
+
+    pub fn refresh_inspected_process(&mut self, pid: u32) {
+        let name = self
+            .inspect_process_detail
+            .as_ref()
+            .map(|d| d.name.clone())
+            .unwrap_or_default();
+        if let Some(detail) = collector::read_process_detail(pid, &name) {
+            self.inspect_process_detail = Some(detail);
+        }
+    }
+
+    pub fn send_inspected_signal(&mut self, signal: i32) {
+        if let Some(pid) = self.inspect_process_pid {
+            let res = self.execute_kill(pid, signal);
+            match res {
+                Ok(()) => {
+                    let sig_name = match signal {
+                        libc::SIGTERM => "SIGTERM",
+                        libc::SIGKILL => "SIGKILL",
+                        libc::SIGSTOP => "SIGSTOP",
+                        libc::SIGCONT => "SIGCONT",
+                        _ => "Signal",
+                    };
+                    self.process_action_message = Some(format!("{sig_name} sent to PID {pid}"));
+                    if signal == libc::SIGKILL || signal == libc::SIGTERM {
+                        self.close_inspector();
+                    }
+                }
+                Err(err) => {
+                    self.process_action_message =
+                        Some(format!("Failed to signal PID {pid}: {err}"));
+                }
+            }
+        }
+    }
+
     pub fn primary_gpu(&self) -> Option<&GpuInfo> {
         self.gpus
             .iter()
             .find(|gpu| gpu.kind == "iGPU")
             .or_else(|| self.gpus.first())
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn test_state() -> Self {
+        Self {
+            system: SystemInfo {
+                os_name: String::new(),
+                os_version: String::new(),
+                kernel: String::new(),
+                hostname: String::new(),
+                cpu_model: String::new(),
+                cpu_count: 1,
+                selinux_mode: String::new(),
+            },
+            env: EnvKind::BareMetal,
+            cpu_usage: 0.0,
+            core_usages: Vec::new(),
+            cpu_history: std::collections::VecDeque::new(),
+            previous_cpu: None,
+            mem_total: 1.0,
+            mem_used: 0.0,
+            mem_available: 1.0,
+            mem_free: 1.0,
+            mem_cached: 0.0,
+            mem_buffers: 0.0,
+            mem_history: std::collections::VecDeque::new(),
+            swap_total: 0.0,
+            swap_used: 0.0,
+            disk: DiskInfo {
+                mount_point: "/".into(),
+                fs_type: "ext4".into(),
+                used_gb: 0.0,
+                total_gb: 1.0,
+                free_gb: 1.0,
+                pct: 0,
+            },
+            mounts: Vec::new(),
+            uptime: String::new(),
+            load_avg: [String::new(), String::new(), String::new()],
+            battery_pct: None,
+            battery_status: String::new(),
+            net_down_bps: 0.0,
+            net_up_bps: 0.0,
+            net_down_history: std::collections::VecDeque::new(),
+            net_up_history: std::collections::VecDeque::new(),
+            interfaces: Vec::new(),
+            previous_net: None,
+            disk_io: Vec::new(),
+            previous_disk_io: None,
+            disk_read_bps: 0.0,
+            disk_write_bps: 0.0,
+            disk_read_history: std::collections::VecDeque::new(),
+            disk_write_history: std::collections::VecDeque::new(),
+            gpus: Vec::new(),
+            previous_gpu_rc6: None,
+            gpu_usage_history: std::collections::VecDeque::new(),
+            gpu_temp_history: std::collections::VecDeque::new(),
+            temp_c: None,
+            temp_history: std::collections::VecDeque::new(),
+            process_count: 0,
+            top_cpu_processes: Vec::new(),
+            top_mem_processes: Vec::new(),
+            root_causes: Vec::new(),
+            failed_units: Vec::new(),
+            storage_health: Vec::new(),
+            previous_process_totals: std::collections::HashMap::new(),
+            process_sort: ProcessSort::CpuDesc,
+            process_history: std::collections::HashMap::new(),
+            process_selected: 0,
+            is_tree_view: false,
+            health_score: 100,
+            alerts: Vec::new(),
+            successful_reads: 0,
+            failed_reads: 0,
+            degraded_sources: Vec::new(),
+            last_sample_at: std::time::Instant::now(),
+            counter: 0,
+            show_help: false,
+            refresh_index: 1,
+            active_tab: ViewTab::Overview,
+            tick_count: 0,
+            terminal_width: 120,
+            cpu_alert: 85.0,
+            mem_alert: 85.0,
+            disk_alert: 85,
+            temp_alert: 80.0,
+            battery_alert: 20,
+            swap_alert: 35.0,
+            process_search: String::new(),
+            is_search_mode: false,
+            open_ports: Vec::new(),
+            zombie_count: 0,
+            confirm_kill_pid: None,
+            confirm_kill_name: None,
+            process_action_message: None,
+            events: std::collections::VecDeque::new(),
+            cpu_pressure_ticks: 0,
+            mem_pressure_ticks: 0,
+            thermal_pressure_ticks: 0,
+            previous_sample_status_label: String::from("OK"),
+            previous_health_band: Severity::Ok,
+            inspect_process_pid: None,
+            inspect_process_detail: None,
+            psi: None,
+            hw_sensors: Vec::new(),
+        }
     }
 
     fn update_sustained_pressure(&mut self) {
@@ -1434,104 +1611,7 @@ mod tests {
     use super::*;
 
     fn bare_state() -> AppState {
-        AppState {
-            system: SystemInfo {
-                os_name: String::new(),
-                os_version: String::new(),
-                kernel: String::new(),
-                hostname: String::new(),
-                cpu_model: String::new(),
-                cpu_count: 1,
-                selinux_mode: String::new(),
-            },
-            env: EnvKind::BareMetal,
-            cpu_usage: 0.0,
-            core_usages: Vec::new(),
-            cpu_history: VecDeque::new(),
-            previous_cpu: None,
-            mem_total: 1.0,
-            mem_used: 0.0,
-            mem_available: 1.0,
-            mem_free: 1.0,
-            mem_cached: 0.0,
-            mem_buffers: 0.0,
-            mem_history: VecDeque::new(),
-            swap_total: 0.0,
-            swap_used: 0.0,
-            disk: DiskInfo {
-                mount_point: "/".into(),
-                fs_type: "ext4".into(),
-                used_gb: 0.0,
-                total_gb: 1.0,
-                free_gb: 1.0,
-                pct: 0,
-            },
-            mounts: Vec::new(),
-            uptime: String::new(),
-            load_avg: [String::new(), String::new(), String::new()],
-            battery_pct: None,
-            battery_status: String::new(),
-            net_down_bps: 0.0,
-            net_up_bps: 0.0,
-            net_down_history: VecDeque::new(),
-            net_up_history: VecDeque::new(),
-            interfaces: Vec::new(),
-            previous_net: None,
-            disk_io: Vec::new(),
-            previous_disk_io: None,
-            disk_read_bps: 0.0,
-            disk_write_bps: 0.0,
-            disk_read_history: VecDeque::new(),
-            disk_write_history: VecDeque::new(),
-            gpus: Vec::new(),
-            previous_gpu_rc6: None,
-            gpu_usage_history: VecDeque::new(),
-            gpu_temp_history: VecDeque::new(),
-            temp_c: None,
-            temp_history: VecDeque::new(),
-            process_count: 0,
-            top_cpu_processes: Vec::new(),
-            top_mem_processes: Vec::new(),
-            root_causes: Vec::new(),
-            failed_units: Vec::new(),
-            storage_health: Vec::new(),
-            previous_process_totals: HashMap::new(),
-            process_sort: ProcessSort::CpuDesc,
-            process_history: HashMap::new(),
-            process_selected: 0,
-            is_tree_view: false,
-            health_score: 100,
-            alerts: Vec::new(),
-            successful_reads: 0,
-            failed_reads: 0,
-            degraded_sources: Vec::new(),
-            last_sample_at: std::time::Instant::now(),
-            counter: 0,
-            show_help: false,
-            refresh_index: 1,
-            active_tab: ViewTab::Overview,
-            tick_count: 0,
-            terminal_width: 120,
-            cpu_alert: 85.0,
-            mem_alert: 85.0,
-            disk_alert: 85,
-            temp_alert: 80.0,
-            battery_alert: 20,
-            swap_alert: 35.0,
-            process_search: String::new(),
-            is_search_mode: false,
-            open_ports: Vec::new(),
-            zombie_count: 0,
-            confirm_kill_pid: None,
-            confirm_kill_name: None,
-            process_action_message: None,
-            events: VecDeque::new(),
-            cpu_pressure_ticks: 0,
-            mem_pressure_ticks: 0,
-            thermal_pressure_ticks: 0,
-            previous_sample_status_label: String::from("OK"),
-            previous_health_band: Severity::Ok,
-        }
+        AppState::test_state()
     }
 
     fn make_process(
@@ -2071,5 +2151,30 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("PID 99999"));
+    }
+
+    #[test]
+    fn inspector_workflow_and_signal_handling() {
+        let mut app = bare_state();
+        let own_pid = std::process::id();
+        app.open_inspector(own_pid);
+        assert_eq!(app.inspect_process_pid, Some(own_pid));
+        assert!(app.inspect_process_detail.is_some());
+        let detail = app.inspect_process_detail.as_ref().unwrap();
+        assert_eq!(detail.pid, own_pid);
+
+        // Refresh
+        app.refresh_inspected_process(own_pid);
+        assert_eq!(app.inspect_process_pid, Some(own_pid));
+
+        // Close
+        app.close_inspector();
+        assert_eq!(app.inspect_process_pid, None);
+        assert!(app.inspect_process_detail.is_none());
+
+        // Signal to non-existent PID
+        app.open_inspector(99999);
+        app.send_inspected_signal(libc::SIGSTOP);
+        assert!(app.process_action_message.is_some());
     }
 }

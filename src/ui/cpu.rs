@@ -77,7 +77,7 @@ fn render_vitals(frame: &mut Frame, area: Rect, app: &AppState, narrow: bool) {
             ));
         frame.render_widget(cpu_gauge, vitals_rows[0]);
 
-        let line2 = Line::from(vec![
+        let mut vitals_spans = vec![
             dim("Load: "),
             styled(
                 format!(
@@ -88,9 +88,23 @@ fn render_vitals(frame: &mut Frame, area: Rect, app: &AppState, narrow: bool) {
             ),
             dim("  │  Tasks: "),
             styled(format!("{} proc", app.process_count), t.accent_blue),
-            dim("  │  Status: "),
-            styled(severity_word(cpu_sev), severity_color(cpu_sev)),
-        ]);
+        ];
+        if let Some(psi) = &app.psi {
+            vitals_spans.push(dim("  │  PSI: "));
+            let cpu_psi = psi.cpu.some.avg10;
+            let p_sev = if cpu_psi > 20.0 {
+                Severity::Critical
+            } else if cpu_psi > 5.0 {
+                Severity::Warn
+            } else {
+                Severity::Ok
+            };
+            vitals_spans.push(styled(format!("{cpu_psi:.1}%"), severity_color(p_sev)));
+        } else {
+            vitals_spans.push(dim("  │  Status: "));
+            vitals_spans.push(styled(severity_word(cpu_sev), severity_color(cpu_sev)));
+        }
+        let line2 = Line::from(vitals_spans);
         frame.render_widget(Paragraph::new(line2), vitals_rows[1]);
     } else if vitals_inner.height == 1 {
         let cpu_gauge = LineGauge::default()
@@ -127,14 +141,29 @@ fn render_vitals(frame: &mut Frame, area: Rect, app: &AppState, narrow: bool) {
         )]);
         frame.render_widget(Paragraph::new(model_text), spec_rows[0]);
 
-        let arch_text = Line::from(vec![
+        let mut arch_spans = vec![
             dim("Cores: "),
             styled(format!("{}", app.system.cpu_count), t.accent_blue),
             dim(" logical  │  Env: "),
             styled(app.env.label(), t.accent_teal),
-            dim("  │  Kernel: "),
-            styled(truncate(&app.system.kernel, 18), t.subtext0),
-        ]);
+        ];
+        if let Some(sensor) = app
+            .hw_sensors
+            .iter()
+            .find(|s| s.fan_rpm.is_some() || s.temp_c.is_some())
+        {
+            if let Some(rpm) = sensor.fan_rpm {
+                arch_spans.push(dim("  │  Fan: "));
+                arch_spans.push(styled(format!("{rpm} RPM"), t.accent_teal));
+            } else if let Some(temp) = sensor.temp_c {
+                arch_spans.push(dim("  │  HwMon: "));
+                arch_spans.push(styled(format!("{temp:.0}\u{b0}C"), t.accent_orange));
+            }
+        } else {
+            arch_spans.push(dim("  │  Kernel: "));
+            arch_spans.push(styled(truncate(&app.system.kernel, 18), t.subtext0));
+        }
+        let arch_text = Line::from(arch_spans);
         frame.render_widget(Paragraph::new(arch_text), spec_rows[1]);
     } else if spec_inner.height == 1 {
         let text = Line::from(vec![
@@ -403,8 +432,7 @@ mod tests {
     use crate::state::AppState;
     use crate::types::*;
     use ratatui::{backend::TestBackend, Terminal};
-    use std::collections::{HashMap, VecDeque};
-    use std::time::Instant;
+    use std::collections::VecDeque;
 
     fn make_test_app(core_count: usize) -> AppState {
         let mut cpu_history = VecDeque::new();
@@ -439,104 +467,21 @@ mod tests {
             },
         ];
 
-        AppState {
-            system: SystemInfo {
-                hostname: "cpu-test".into(),
-                os_name: "Linux".into(),
-                os_version: "6.8.0".into(),
-                kernel: "6.8.0-generic".into(),
-                cpu_model: "AMD Ryzen 9 7950X".into(),
-                cpu_count: core_count,
-                selinux_mode: "Disabled".into(),
-            },
-            env: EnvKind::BareMetal,
-            cpu_usage: 42.5,
-            core_usages: vec![40.0; core_count],
-            cpu_history,
-            previous_cpu: None,
-            mem_total: 32768.0,
-            mem_used: 16384.0,
-            mem_available: 16384.0,
-            mem_free: 8192.0,
-            mem_cached: 6144.0,
-            mem_buffers: 2048.0,
-            mem_history: VecDeque::new(),
-            swap_total: 16384.0,
-            swap_used: 512.0,
-            disk: DiskInfo {
-                mount_point: "/".into(),
-                total_gb: 512.0,
-                used_gb: 200.0,
-                free_gb: 312.0,
-                pct: 39,
-                fs_type: "ext4".into(),
-            },
-            mounts: Vec::new(),
-            uptime: "8h 15m".into(),
-            load_avg: ["1.20".into(), "0.85".into(), "0.50".into()],
-            battery_pct: None,
-            battery_status: "AC".into(),
-            net_down_bps: 0.0,
-            net_up_bps: 0.0,
-            net_down_history: VecDeque::new(),
-            net_up_history: VecDeque::new(),
-            interfaces: Vec::new(),
-            previous_net: None,
-            disk_io: Vec::new(),
-            previous_disk_io: None,
-            disk_read_bps: 0.0,
-            disk_write_bps: 0.0,
-            disk_read_history: VecDeque::new(),
-            disk_write_history: VecDeque::new(),
-            gpus: Vec::new(),
-            previous_gpu_rc6: None,
-            gpu_usage_history: VecDeque::new(),
-            gpu_temp_history: VecDeque::new(),
-            temp_c: None,
-            temp_history: VecDeque::new(),
-            process_count: 142,
-            top_cpu_processes,
-            top_mem_processes: Vec::new(),
-            root_causes: Vec::new(),
-            failed_units: Vec::new(),
-            storage_health: Vec::new(),
-            previous_process_totals: HashMap::new(),
-            process_sort: ProcessSort::CpuDesc,
-            process_history: HashMap::new(),
-            process_selected: 0,
-            is_tree_view: false,
-            health_score: 95,
-            alerts: Vec::new(),
-            successful_reads: 10,
-            failed_reads: 0,
-            degraded_sources: Vec::new(),
-            last_sample_at: Instant::now(),
-            counter: 1,
-            show_help: false,
-            refresh_index: 1,
-            active_tab: ViewTab::Cpu,
-            tick_count: 1,
-            terminal_width: 120,
-            cpu_alert: 85.0,
-            mem_alert: 85.0,
-            disk_alert: 85,
-            temp_alert: 80.0,
-            battery_alert: 20,
-            swap_alert: 35.0,
-            process_search: String::new(),
-            is_search_mode: false,
-            open_ports: Vec::new(),
-            zombie_count: 0,
-            confirm_kill_pid: None,
-            confirm_kill_name: None,
-            process_action_message: None,
-            events: VecDeque::new(),
-            cpu_pressure_ticks: 0,
-            mem_pressure_ticks: 0,
-            thermal_pressure_ticks: 0,
-            previous_sample_status_label: "OK".into(),
-            previous_health_band: Severity::Ok,
-        }
+        let mut app = AppState::test_state();
+        app.system.hostname = "cpu-test".into();
+        app.system.os_name = "Linux".into();
+        app.system.os_version = "6.8.0".into();
+        app.system.kernel = "6.8.0-generic".into();
+        app.system.cpu_model = "AMD Ryzen 9 7950X".into();
+        app.system.cpu_count = core_count;
+        app.system.selinux_mode = "Disabled".into();
+        app.cpu_usage = 42.5;
+        app.core_usages = vec![40.0; core_count];
+        app.cpu_history = cpu_history;
+        app.process_count = 142;
+        app.top_cpu_processes = top_cpu_processes;
+        app.active_tab = ViewTab::Cpu;
+        app
     }
 
     #[test]
@@ -563,5 +508,44 @@ mod tests {
                 cpu_tab(f, f.size(), &app);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn cpu_renders_with_psi_and_fan_telemetry() {
+        let mut app = make_test_app(8);
+        app.psi = Some(SystemPsi {
+            cpu: PsiMetric {
+                some: PsiValues {
+                    avg10: 8.5,
+                    avg60: 4.2,
+                    avg300: 2.1,
+                    total_us: 50000,
+                },
+                full: None,
+            },
+            memory: PsiMetric::default(),
+            io: PsiMetric::default(),
+        });
+        app.hw_sensors = vec![HwSensor {
+            name: "thinkpad".into(),
+            label: "CPU Fan".into(),
+            temp_c: None,
+            fan_rpm: Some(2500),
+            crit_c: None,
+        }];
+
+        let backend = TestBackend::new(120, 35);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                cpu_tab(f, f.size(), &app);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("PSI:"));
+        assert!(content.contains("8.5%"));
+        assert!(content.contains("2500 RPM"));
     }
 }

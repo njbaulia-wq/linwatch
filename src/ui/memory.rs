@@ -77,13 +77,26 @@ fn render_vitals(frame: &mut Frame, area: Rect, app: &AppState, narrow: bool) {
             ));
         frame.render_widget(ram_gauge, ram_rows[0]);
 
-        let ram_text = Line::from(vec![
+        let mut ram_spans = vec![
             dim("Active: "),
             styled(format!("{:.0} MB", app.mem_used), t.text),
             dim(format!(" / {:.0} MB", app.mem_total)),
             dim("  │  Avail: "),
             styled(format!("{:.0} MB", app.mem_available), t.accent_teal),
-        ]);
+        ];
+        if let Some(psi) = &app.psi {
+            let mem_stall = psi.memory.some.avg10;
+            let m_sev = if mem_stall > 20.0 {
+                Severity::Critical
+            } else if mem_stall > 5.0 {
+                Severity::Warn
+            } else {
+                Severity::Ok
+            };
+            ram_spans.push(dim("  │  PSI: "));
+            ram_spans.push(styled(format!("{mem_stall:.1}%"), severity_color(m_sev)));
+        }
+        let ram_text = Line::from(ram_spans);
         frame.render_widget(Paragraph::new(ram_text), ram_rows[1]);
     } else if ram_inner.height == 1 {
         let ram_gauge = LineGauge::default()
@@ -243,11 +256,38 @@ fn render_architecture_and_trend(frame: &mut Frame, area: Rect, app: &AppState, 
             styled(format!("{:>6.0} MB", buffers), t.text),
             dim(format!("  ({:>5.1}%)", p_buffers)),
         ]));
+        let has_psi = app.psi.is_some();
         lines.push(Line::from(vec![
-            styled("└─ Free (Zeroed):    ", t.subtext0),
+            styled(
+                if has_psi {
+                    "├─ Free (Zeroed):    "
+                } else {
+                    "└─ Free (Zeroed):    "
+                },
+                t.subtext0,
+            ),
             styled(format!("{:>6.0} MB", free), t.text),
             dim(format!("  ({:>5.1}%)", p_free)),
         ]));
+
+        if let Some(psi) = &app.psi {
+            let mem_stall = psi.memory.some.avg10;
+            let full_stall = psi.memory.full.map(|f| f.avg10).unwrap_or(0.0);
+            let psi_sev = if mem_stall > 20.0 {
+                Severity::Critical
+            } else if mem_stall > 5.0 {
+                Severity::Warn
+            } else {
+                Severity::Ok
+            };
+            lines.push(Line::from(vec![
+                styled("└─ Kernel PSI:       ", t.accent_purple),
+                styled(
+                    format!("some {:.1}% · full {:.1}%", mem_stall, full_stall),
+                    severity_color(psi_sev),
+                ),
+            ]));
+        }
 
         frame.render_widget(Paragraph::new(lines), arch_inner);
     } else if arch_inner.height >= 1 {
@@ -431,8 +471,7 @@ mod tests {
     use crate::state::AppState;
     use crate::types::*;
     use ratatui::{backend::TestBackend, Terminal};
-    use std::collections::{HashMap, VecDeque};
-    use std::time::Instant;
+    use std::collections::VecDeque;
 
     fn make_test_app() -> AppState {
         let mut mem_history = VecDeque::new();
@@ -467,104 +506,27 @@ mod tests {
             },
         ];
 
-        AppState {
-            system: SystemInfo {
-                hostname: "test-box".into(),
-                os_name: "Linux".into(),
-                os_version: "6.8.0".into(),
-                kernel: "6.8.0-generic".into(),
-                cpu_model: "AMD Ryzen 9".into(),
-                cpu_count: 16,
-                selinux_mode: "Disabled".into(),
-            },
-            env: EnvKind::BareMetal,
-            cpu_usage: 25.0,
-            core_usages: vec![25.0; 16],
-            cpu_history: VecDeque::new(),
-            previous_cpu: None,
-            mem_total: 16384.0,
-            mem_used: 8192.0,
-            mem_available: 8192.0,
-            mem_free: 2048.0,
-            mem_cached: 5120.0,
-            mem_buffers: 1024.0,
-            mem_history,
-            swap_total: 8192.0,
-            swap_used: 1024.0,
-            disk: DiskInfo {
-                mount_point: "/".into(),
-                total_gb: 500.0,
-                used_gb: 200.0,
-                free_gb: 300.0,
-                pct: 40,
-                fs_type: "ext4".into(),
-            },
-            mounts: Vec::new(),
-            uptime: "5h 12m".into(),
-            load_avg: ["0.50".into(), "0.40".into(), "0.30".into()],
-            battery_pct: None,
-            battery_status: "AC".into(),
-            net_down_bps: 0.0,
-            net_up_bps: 0.0,
-            net_down_history: VecDeque::new(),
-            net_up_history: VecDeque::new(),
-            interfaces: Vec::new(),
-            previous_net: None,
-            disk_io: Vec::new(),
-            previous_disk_io: None,
-            disk_read_bps: 0.0,
-            disk_write_bps: 0.0,
-            disk_read_history: VecDeque::new(),
-            disk_write_history: VecDeque::new(),
-            gpus: Vec::new(),
-            previous_gpu_rc6: None,
-            gpu_usage_history: VecDeque::new(),
-            gpu_temp_history: VecDeque::new(),
-            temp_c: None,
-            temp_history: VecDeque::new(),
-            process_count: 100,
-            top_cpu_processes: Vec::new(),
-            top_mem_processes,
-            root_causes: Vec::new(),
-            failed_units: Vec::new(),
-            storage_health: Vec::new(),
-            previous_process_totals: HashMap::new(),
-            process_sort: ProcessSort::MemDesc,
-            process_history: HashMap::new(),
-            process_selected: 0,
-            is_tree_view: false,
-            health_score: 95,
-            alerts: Vec::new(),
-            successful_reads: 10,
-            failed_reads: 0,
-            degraded_sources: Vec::new(),
-            last_sample_at: Instant::now(),
-            counter: 1,
-            show_help: false,
-            refresh_index: 1,
-            active_tab: ViewTab::Memory,
-            tick_count: 1,
-            terminal_width: 120,
-            cpu_alert: 85.0,
-            mem_alert: 85.0,
-            disk_alert: 85,
-            temp_alert: 80.0,
-            battery_alert: 20,
-            swap_alert: 35.0,
-            process_search: String::new(),
-            is_search_mode: false,
-            open_ports: Vec::new(),
-            zombie_count: 0,
-            confirm_kill_pid: None,
-            confirm_kill_name: None,
-            process_action_message: None,
-            events: VecDeque::new(),
-            cpu_pressure_ticks: 0,
-            mem_pressure_ticks: 0,
-            thermal_pressure_ticks: 0,
-            previous_sample_status_label: "OK".into(),
-            previous_health_band: Severity::Ok,
-        }
+        let mut app = AppState::test_state();
+        app.system.hostname = "test-box".into();
+        app.system.os_name = "Linux".into();
+        app.system.os_version = "6.8.0".into();
+        app.system.kernel = "6.8.0-generic".into();
+        app.system.cpu_model = "AMD Ryzen 9".into();
+        app.system.cpu_count = 16;
+        app.system.selinux_mode = "Disabled".into();
+        app.mem_total = 32768.0;
+        app.mem_used = 22400.0;
+        app.mem_available = 10368.0;
+        app.mem_free = 4096.0;
+        app.mem_cached = 5120.0;
+        app.mem_buffers = 1152.0;
+        app.swap_total = 16384.0;
+        app.swap_used = 1024.0;
+        app.mem_history = mem_history;
+        app.process_count = 120;
+        app.top_mem_processes = top_mem_processes;
+        app.active_tab = ViewTab::Memory;
+        app
     }
 
     #[test]
@@ -593,5 +555,41 @@ mod tests {
                 memory_tab(f, f.size(), &app);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn memory_renders_with_psi_stall() {
+        let mut app = make_test_app();
+        app.psi = Some(SystemPsi {
+            cpu: PsiMetric::default(),
+            memory: PsiMetric {
+                some: PsiValues {
+                    avg10: 4.5,
+                    avg60: 2.3,
+                    avg300: 1.1,
+                    total_us: 12345,
+                },
+                full: Some(PsiValues {
+                    avg10: 1.2,
+                    avg60: 0.5,
+                    avg300: 0.2,
+                    total_us: 3456,
+                }),
+            },
+            io: PsiMetric::default(),
+        });
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                memory_tab(f, f.size(), &app);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("PSI"));
+        assert!(content.contains("4.5%"));
     }
 }

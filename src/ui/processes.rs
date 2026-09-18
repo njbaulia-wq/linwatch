@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Paragraph, Row, Table, TableState},
+    widgets::{Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -43,7 +43,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         styled("  Sort: ", t.overlay1),
         styled(app.process_sort.label(), t.accent_blue).add_modifier(Modifier::BOLD),
         styled(
-            "  [T] tree  [S] sort  [/] search  [K] terminate  [\u{2191}/\u{2193}] select",
+            "  [Enter/I] inspect  [T] tree  [S] sort  [/] search  [K] terminate  [\u{2191}/\u{2193}] select",
             t.overlay1,
         ),
     ]);
@@ -311,6 +311,133 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             popup,
         );
     }
+
+    // Process Inspector Modal
+    if let Some(detail) = &app.inspect_process_detail {
+        render_process_inspector(frame, area, detail, app.process_action_message.as_deref());
+    }
+}
+
+fn render_process_inspector(
+    frame: &mut Frame,
+    area: Rect,
+    detail: &crate::types::ProcessDetail,
+    action_message: Option<&str>,
+) {
+    let t = theme::get();
+    let popup_w = area.width.saturating_sub(4).clamp(52, 80);
+    let popup_h = area.height.saturating_sub(2).clamp(13, 16);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let title = format!(
+        " Process Deep-Dive Inspector: {} (PID {}) ",
+        truncate(&detail.name, 28),
+        detail.pid
+    );
+    let block = panel_block(title);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let max_w = inner.width as usize;
+    let mut lines = Vec::new();
+
+    // 1. Core vitals: PID, PPID, State, Threads, UID:GID
+    lines.push(Line::from(vec![
+        dim(" PID: "),
+        styled(format!("{}", detail.pid), t.accent_blue).add_modifier(Modifier::BOLD),
+        dim("  PPID: "),
+        styled(format!("{}", detail.ppid), t.overlay1),
+        dim("  State: "),
+        styled(&detail.state, t.accent_teal).add_modifier(Modifier::BOLD),
+        dim("  Threads: "),
+        styled(format!("{}", detail.threads), t.accent_purple),
+        dim("  User: "),
+        styled(format!("{}:{}", detail.uid, detail.gid), t.subtext0),
+    ]));
+
+    // 2. Execution Context
+    lines.push(Line::from(styled("─".repeat(max_w.min(76)), t.surface1)));
+    let cmd_w = max_w.saturating_sub(11).max(10);
+    lines.push(Line::from(vec![
+        dim(" Command: "),
+        styled(truncate(&detail.cmdline, cmd_w), t.text),
+    ]));
+    let cwd_w = max_w.saturating_sub(11).max(10);
+    lines.push(Line::from(vec![
+        dim(" WorkDir: "),
+        styled(truncate(&detail.cwd, cwd_w), t.subtext0),
+    ]));
+
+    // 3. Memory Footprint
+    lines.push(Line::from(styled("─".repeat(max_w.min(76)), t.surface1)));
+    lines.push(Line::from(vec![
+        dim(" VmPeak: "),
+        styled(format!("{:>6.1} MB", detail.vm_peak_mb), t.text),
+        dim("  │ VmSize: "),
+        styled(format!("{:>6.1} MB", detail.vm_size_mb), t.text),
+        dim("  │ VmRSS: "),
+        styled(format!("{:>6.1} MB", detail.vm_rss_mb), t.accent_yellow)
+            .add_modifier(Modifier::BOLD),
+    ]));
+    lines.push(Line::from(vec![
+        dim(" RssAnon: "),
+        styled(format!("{:>5.1} MB", detail.rss_anon_mb), t.subtext0),
+        dim("  │ RssFile: "),
+        styled(format!("{:>5.1} MB", detail.rss_file_mb), t.subtext0),
+        dim("  │ RssShmem: "),
+        styled(format!("{:>5.1} MB", detail.rss_shmem_mb), t.subtext0),
+    ]));
+
+    // 4. I/O & Descriptors
+    lines.push(Line::from(styled("─".repeat(max_w.min(76)), t.surface1)));
+    lines.push(Line::from(vec![
+        dim(" Open FDs: "),
+        styled(format!("{}", detail.open_fds), t.accent_teal),
+        dim("  │ Read: "),
+        styled(format_bytes(detail.read_bytes as f64), t.text),
+        dim("  │ Write: "),
+        styled(format_bytes(detail.write_bytes as f64), t.text),
+    ]));
+
+    // 5. Action message or status
+    if let Some(msg) = action_message {
+        lines.push(Line::from(vec![
+            dim(" Action: "),
+            styled(truncate(msg, max_w.saturating_sub(10)), t.accent_yellow)
+                .add_modifier(Modifier::BOLD),
+        ]));
+    } else {
+        lines.push(Line::from(""));
+    }
+
+    // 6. Action Hotkeys
+    lines.push(Line::from(styled("─".repeat(max_w.min(76)), t.surface1)));
+    lines.push(Line::from(vec![
+        styled(" [T] ", t.accent_yellow).add_modifier(Modifier::BOLD),
+        dim("SIGTERM  "),
+        styled("[9] ", t.accent_red).add_modifier(Modifier::BOLD),
+        dim("SIGKILL  "),
+        styled("[P] ", t.accent_blue).add_modifier(Modifier::BOLD),
+        dim("SIGSTOP  "),
+        styled("[C] ", t.accent_teal).add_modifier(Modifier::BOLD),
+        dim("SIGCONT  "),
+        styled("[Esc/Enter] ", t.overlay1),
+        dim("Close"),
+    ]));
+
+    let visible: Vec<Line> = lines.into_iter().take(inner.height as usize).collect();
+    frame.render_widget(Paragraph::new(visible), inner);
 }
 
 use ratatui::widgets::Cell;
@@ -396,5 +523,49 @@ mod tests {
         let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(content_str.contains("system-master"));
         assert!(content_str.contains("worker-child"));
+    }
+
+    #[test]
+    fn processes_tab_renders_inspector_modal() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = AppState::new(AppConfig::default());
+        app.inspect_process_pid = Some(4242);
+        app.inspect_process_detail = Some(ProcessDetail {
+            pid: 4242,
+            ppid: 1,
+            name: "heavy-database-engine".into(),
+            cmdline: "/usr/bin/heavy-database-engine --config /etc/db.conf".into(),
+            state: "S".into(),
+            threads: 16,
+            uid: 1000,
+            gid: 1000,
+            vm_peak_mb: 4096.0,
+            vm_size_mb: 3500.0,
+            vm_rss_mb: 2048.0,
+            rss_anon_mb: 1500.0,
+            rss_file_mb: 500.0,
+            rss_shmem_mb: 48.0,
+            read_bytes: 1024 * 1024 * 250,
+            write_bytes: 1024 * 1024 * 500,
+            cancelled_write_bytes: 0,
+            open_fds: 64,
+            cwd: "/var/lib/db".into(),
+        });
+
+        let mut table_state = TableState::default();
+        terminal
+            .draw(|frame| {
+                processes_tab(frame, frame.size(), &app, &mut table_state);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content_str.contains("Deep-Dive Inspector"));
+        assert!(content_str.contains("heavy-database-engine"));
+        assert!(content_str.contains("4242"));
+        assert!(content_str.contains("SIGTERM"));
+        assert!(content_str.contains("SIGSTOP"));
     }
 }

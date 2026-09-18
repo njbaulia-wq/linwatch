@@ -1345,6 +1345,227 @@ fn page_size_bytes() -> f64 {
     }
 }
 
+pub fn read_psi() -> Option<SystemPsi> {
+    let cpu = parse_psi_file("/proc/pressure/cpu")?;
+    let memory = parse_psi_file("/proc/pressure/memory")?;
+    let io = parse_psi_file("/proc/pressure/io")?;
+    Some(SystemPsi { cpu, memory, io })
+}
+
+fn parse_psi_file(path: &str) -> Option<PsiMetric> {
+    let content = fs::read_to_string(path).ok()?;
+    parse_psi_metric(&content)
+}
+
+pub fn parse_psi_metric(content: &str) -> Option<PsiMetric> {
+    let mut metric = PsiMetric::default();
+    let mut found = false;
+    for line in content.lines() {
+        if line.starts_with("some ") {
+            metric.some = parse_psi_line(line)?;
+            found = true;
+        } else if line.starts_with("full ") {
+            metric.full = parse_psi_line(line);
+            found = true;
+        }
+    }
+    if found {
+        Some(metric)
+    } else {
+        None
+    }
+}
+
+fn parse_psi_line(line: &str) -> Option<PsiValues> {
+    let mut vals = PsiValues::default();
+    for part in line.split_whitespace().skip(1) {
+        if let Some((k, v)) = part.split_once('=') {
+            match k {
+                "avg10" => vals.avg10 = v.parse().unwrap_or(0.0),
+                "avg60" => vals.avg60 = v.parse().unwrap_or(0.0),
+                "avg300" => vals.avg300 = v.parse().unwrap_or(0.0),
+                "total" => vals.total_us = v.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    Some(vals)
+}
+
+pub fn parse_kb(val: &str) -> f64 {
+    val.split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|kb| kb / 1024.0)
+        .unwrap_or(0.0)
+}
+
+pub fn read_process_detail(pid: u32, fallback_name: &str) -> Option<ProcessDetail> {
+    let cmdline = fs::read(format!("/proc/{pid}/cmdline"))
+        .ok()
+        .and_then(|bytes| {
+            if bytes.is_empty() {
+                None
+            } else {
+                let s = bytes
+                    .split(|&b| b == 0)
+                    .filter(|slice| !slice.is_empty())
+                    .map(|slice| String::from_utf8_lossy(slice).to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            }
+        })
+        .unwrap_or_else(|| fallback_name.to_string());
+
+    let mut detail = ProcessDetail {
+        pid,
+        name: fallback_name.to_string(),
+        cmdline,
+        ..Default::default()
+    };
+
+    if let Ok(status_str) = fs::read_to_string(format!("/proc/{pid}/status")) {
+        for line in status_str.lines() {
+            let Some((key, val)) = line.split_once(':') else {
+                continue;
+            };
+            let val = val.trim();
+            match key.trim() {
+                "Name" => {
+                    if !val.is_empty() {
+                        detail.name = val.to_string();
+                    }
+                }
+                "PPid" => detail.ppid = val.parse().unwrap_or(0),
+                "State" => detail.state = val.to_string(),
+                "Threads" => detail.threads = val.parse().unwrap_or(1),
+                "Uid" => {
+                    if let Some(first) = val.split_whitespace().next() {
+                        detail.uid = first.parse().unwrap_or(0);
+                    }
+                }
+                "Gid" => {
+                    if let Some(first) = val.split_whitespace().next() {
+                        detail.gid = first.parse().unwrap_or(0);
+                    }
+                }
+                "VmPeak" => detail.vm_peak_mb = parse_kb(val),
+                "VmSize" => detail.vm_size_mb = parse_kb(val),
+                "VmRSS" => detail.vm_rss_mb = parse_kb(val),
+                "RssAnon" => detail.rss_anon_mb = parse_kb(val),
+                "RssFile" => detail.rss_file_mb = parse_kb(val),
+                "RssShmem" => detail.rss_shmem_mb = parse_kb(val),
+                _ => {}
+            }
+        }
+    }
+
+    if let Ok(io_str) = fs::read_to_string(format!("/proc/{pid}/io")) {
+        for line in io_str.lines() {
+            let Some((k, v)) = line.split_once(':') else {
+                continue;
+            };
+            let v = v.trim();
+            match k.trim() {
+                "read_bytes" => detail.read_bytes = v.parse().unwrap_or(0),
+                "write_bytes" => detail.write_bytes = v.parse().unwrap_or(0),
+                "cancelled_write_bytes" => detail.cancelled_write_bytes = v.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+
+    if let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) {
+        detail.open_fds = entries.count();
+    }
+
+    detail.cwd = fs::read_link(format!("/proc/{pid}/cwd"))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| String::from("N/A"));
+
+    Some(detail)
+}
+
+pub fn read_hw_sensors() -> Vec<HwSensor> {
+    let mut sensors = Vec::new();
+    if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name =
+                read_trimmed_path(path.join("name")).unwrap_or_else(|| String::from("hwmon"));
+            if let Ok(sub_entries) = fs::read_dir(&path) {
+                for sub in sub_entries.flatten() {
+                    let file_name = sub.file_name().to_string_lossy().to_string();
+                    if file_name.starts_with("temp") && file_name.ends_with("_input") {
+                        let prefix = file_name.trim_end_matches("_input");
+                        let label = read_trimmed_path(path.join(format!("{prefix}_label")))
+                            .unwrap_or_else(|| format!("{name} {prefix}"));
+                        let temp_milli: Option<f64> =
+                            read_trimmed_path(sub.path()).and_then(|s| s.parse().ok());
+                        let temp_c = temp_milli.map(|m| m / 1000.0);
+                        let crit_milli: Option<f64> =
+                            read_trimmed_path(path.join(format!("{prefix}_crit")))
+                                .and_then(|s| s.parse().ok());
+                        let crit_c = crit_milli.map(|m| m / 1000.0);
+
+                        sensors.push(HwSensor {
+                            name: name.clone(),
+                            label,
+                            temp_c,
+                            fan_rpm: None,
+                            crit_c,
+                        });
+                    } else if file_name.starts_with("fan") && file_name.ends_with("_input") {
+                        let prefix = file_name.trim_end_matches("_input");
+                        let label = read_trimmed_path(path.join(format!("{prefix}_label")))
+                            .unwrap_or_else(|| format!("{name} {prefix}"));
+                        let fan_rpm: Option<u64> =
+                            read_trimmed_path(sub.path()).and_then(|s| s.parse().ok());
+
+                        sensors.push(HwSensor {
+                            name: name.clone(),
+                            label,
+                            temp_c: None,
+                            fan_rpm,
+                            crit_c: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if sensors.is_empty() {
+        if let Ok(entries) = fs::read_dir("/sys/class/thermal") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                if file_name.starts_with("thermal_zone") {
+                    let zone_type =
+                        read_trimmed_path(path.join("type")).unwrap_or_else(|| file_name.clone());
+                    let temp_milli: Option<f64> =
+                        read_trimmed_path(path.join("temp")).and_then(|s| s.parse().ok());
+                    let temp_c = temp_milli.map(|m| m / 1000.0);
+                    if temp_c.is_some() {
+                        sensors.push(HwSensor {
+                            name: "thermal".into(),
+                            label: zone_type,
+                            temp_c,
+                            fan_rpm: None,
+                            crit_c: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    sensors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1572,5 +1793,57 @@ mod tests {
         let empty_set = HashSet::new();
         let map = build_socket_inode_map(&empty_set);
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn parses_psi_metric_with_some_and_full() {
+        let content = "some avg10=2.50 avg60=1.20 avg300=0.80 total=123456\n\
+                       full avg10=0.50 avg60=0.20 avg300=0.10 total=45678\n";
+        let metric = parse_psi_metric(content).unwrap();
+        assert_eq!(metric.some.avg10, 2.50);
+        assert_eq!(metric.some.avg60, 1.20);
+        assert_eq!(metric.some.avg300, 0.80);
+        assert_eq!(metric.some.total_us, 123456);
+
+        let full = metric.full.unwrap();
+        assert_eq!(full.avg10, 0.50);
+        assert_eq!(full.avg60, 0.20);
+        assert_eq!(full.avg300, 0.10);
+        assert_eq!(full.total_us, 45678);
+    }
+
+    #[test]
+    fn parses_kb_converts_to_mb() {
+        assert_eq!(parse_kb("1024 kB"), 1.0);
+        assert_eq!(parse_kb("20480 kB"), 20.0);
+        assert_eq!(parse_kb("0 kB"), 0.0);
+    }
+
+    #[test]
+    fn reads_own_process_detail_successfully() {
+        let own_pid = std::process::id();
+        let detail = read_process_detail(own_pid, "linwatch_test");
+        assert!(detail.is_some());
+        let d = detail.unwrap();
+        assert_eq!(d.pid, own_pid);
+        assert!(!d.cwd.is_empty());
+    }
+
+    #[test]
+    fn parses_psi_metric_single_some_line() {
+        let content = "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n";
+        let metric = parse_psi_metric(content).unwrap();
+        assert_eq!(metric.some.avg10, 0.0);
+        assert!(metric.full.is_none());
+    }
+
+    #[test]
+    fn parses_psi_metric_invalid_returns_none() {
+        assert!(parse_psi_metric("invalid content").is_none());
+    }
+
+    #[test]
+    fn reads_hw_sensors_does_not_panic() {
+        let _ = read_hw_sensors();
     }
 }

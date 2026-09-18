@@ -772,19 +772,30 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
         ),
     ]));
 
-    // 3. CPU Hardware & Temperature
+    // 3. CPU Hardware, Temperature & Fans
     let cpu_model = if app.system.cpu_model.is_empty() {
         "Processor"
     } else {
         &app.system.cpu_model
     };
-    let cpu_detail = if let Some(temp) = app.temp_c {
-        format!(
+    let hw_temp = app
+        .temp_c
+        .or_else(|| app.hw_sensors.iter().find_map(|s| s.temp_c));
+    let fan_info = app
+        .hw_sensors
+        .iter()
+        .find_map(|s| s.fan_rpm.map(|rpm| format!("{} RPM", rpm)));
+    let cpu_detail = match (hw_temp, fan_info) {
+        (Some(temp), Some(fan)) => format!(
+            "{} ({} cores · {:.0}\u{b0}C · {})",
+            cpu_model, app.system.cpu_count, temp, fan
+        ),
+        (Some(temp), None) => format!(
             "{} ({} cores · {:.0}\u{b0}C)",
             cpu_model, app.system.cpu_count, temp
-        )
-    } else {
-        format!("{} ({} cores)", cpu_model, app.system.cpu_count)
+        ),
+        (None, Some(fan)) => format!("{} ({} cores · {})", cpu_model, app.system.cpu_count, fan),
+        (None, None) => format!("{} ({} cores)", cpu_model, app.system.cpu_count),
     };
     lines.push(Line::from(vec![
         Span::styled(
@@ -832,6 +843,39 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
             Style::default().fg(t.text),
         ),
     ]));
+
+    // 5. Kernel PSI Telemetry (Pressure Stall Information)
+    if let Some(psi) = &app.psi {
+        let cpu_stall = psi.cpu.some.avg10;
+        let mem_stall = psi.memory.some.avg10;
+        let io_stall = psi.io.some.avg10;
+        let psi_detail = format!(
+            "CPU: {:.1}% · Mem: {:.1}% · I/O: {:.1}%",
+            cpu_stall, mem_stall, io_stall
+        );
+        let stall_sev = if cpu_stall > 20.0 || mem_stall > 20.0 || io_stall > 20.0 {
+            Severity::Critical
+        } else if cpu_stall > 5.0 || mem_stall > 5.0 || io_stall > 5.0 {
+            Severity::Warn
+        } else {
+            Severity::Ok
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<width$}: ", "Kernel PSI", width = label_w),
+                Style::default().fg(t.overlay1),
+            ),
+            Span::styled(
+                truncate(
+                    &psi_detail,
+                    inner.width.saturating_sub(label_w as u16 + 2) as usize,
+                ),
+                Style::default()
+                    .fg(severity_color(stall_sev))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
 
     // 5. System Services & Processes
     let services_line = if !app.failed_units.is_empty() {
@@ -920,109 +964,20 @@ mod tests {
     use std::collections::VecDeque;
 
     fn make_app() -> AppState {
-        use crate::types::*;
-        AppState {
-            system: SystemInfo {
-                os_name: String::new(),
-                os_version: String::new(),
-                kernel: String::new(),
-                hostname: String::new(),
-                cpu_model: String::new(),
-                cpu_count: 1,
-                selinux_mode: String::new(),
-            },
-            env: EnvKind::BareMetal,
-            cpu_usage: 45.0,
-            core_usages: vec![40.0, 50.0],
-            cpu_history: VecDeque::from([(0.0, 40.0), (1.0, 45.0), (2.0, 50.0)]),
-            previous_cpu: None,
-            mem_total: 16000.0,
-            mem_used: 8000.0,
-            mem_available: 8000.0,
-            mem_free: 2000.0,
-            mem_cached: 5000.0,
-            mem_buffers: 1000.0,
-            mem_history: VecDeque::from([(0.0, 50.0), (1.0, 51.0), (2.0, 50.5)]),
-            swap_total: 4096.0,
-            swap_used: 0.0,
-            disk: DiskInfo {
-                mount_point: "/".into(),
-                fs_type: "ext4".into(),
-                used_gb: 50.0,
-                total_gb: 200.0,
-                free_gb: 150.0,
-                pct: 25,
-            },
-            mounts: Vec::new(),
-            uptime: String::from("1h 23m"),
-            load_avg: [
-                String::from("0.50"),
-                String::from("0.60"),
-                String::from("0.70"),
-            ],
-            battery_pct: Some(85),
-            battery_status: String::from("Discharging"),
-            net_down_bps: 1024.0,
-            net_up_bps: 512.0,
-            net_down_history: VecDeque::new(),
-            net_up_history: VecDeque::new(),
-            interfaces: Vec::new(),
-            previous_net: None,
-            disk_io: Vec::new(),
-            previous_disk_io: None,
-            disk_read_bps: 0.0,
-            disk_write_bps: 0.0,
-            disk_read_history: VecDeque::new(),
-            disk_write_history: VecDeque::new(),
-            gpus: Vec::new(),
-            previous_gpu_rc6: None,
-            gpu_usage_history: VecDeque::new(),
-            gpu_temp_history: VecDeque::new(),
-            temp_c: Some(55.0),
-            temp_history: VecDeque::new(),
-            process_count: 128,
-            top_cpu_processes: Vec::new(),
-            top_mem_processes: Vec::new(),
-            root_causes: Vec::new(),
-            failed_units: Vec::new(),
-            storage_health: Vec::new(),
-            previous_process_totals: std::collections::HashMap::new(),
-            process_sort: ProcessSort::CpuDesc,
-            process_history: std::collections::HashMap::new(),
-            process_selected: 0,
-            is_tree_view: false,
-            health_score: 85,
-            alerts: vec!["System stable \u{2713} All thresholds nominal.".into()],
-            successful_reads: 100,
-            failed_reads: 2,
-            degraded_sources: Vec::new(),
-            last_sample_at: std::time::Instant::now(),
-            counter: 3,
-            show_help: false,
-            refresh_index: 1,
-            active_tab: ViewTab::Overview,
-            tick_count: 5,
-            terminal_width: 120,
-            cpu_alert: 85.0,
-            mem_alert: 85.0,
-            disk_alert: 85,
-            temp_alert: 80.0,
-            battery_alert: 20,
-            swap_alert: 35.0,
-            process_search: String::new(),
-            is_search_mode: false,
-            open_ports: Vec::new(),
-            zombie_count: 0,
-            confirm_kill_pid: None,
-            confirm_kill_name: None,
-            process_action_message: None,
-            events: VecDeque::new(),
-            cpu_pressure_ticks: 0,
-            mem_pressure_ticks: 0,
-            thermal_pressure_ticks: 0,
-            previous_sample_status_label: String::from("OK"),
-            previous_health_band: Severity::Ok,
-        }
+        let mut app = AppState::test_state();
+        app.cpu_usage = 45.0;
+        app.mem_total = 16384.0;
+        app.mem_used = 8192.0;
+        app.mem_available = 8192.0;
+        app.mem_free = 4096.0;
+        app.health_score = 85;
+        app.alerts = vec!["System stable \u{2713} All thresholds nominal.".into()];
+        app.successful_reads = 100;
+        app.failed_reads = 2;
+        app.counter = 3;
+        app.tick_count = 5;
+        app.active_tab = crate::ui::ViewTab::Overview;
+        app
     }
 
     #[test]
@@ -1120,5 +1075,74 @@ mod tests {
             buf.content.iter().any(|c| c.symbol() != " "),
             "blank render with vitals alerts"
         );
+    }
+
+    #[test]
+    fn overview_renders_with_psi_and_hw_sensors() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = make_app();
+        app.psi = Some(crate::types::SystemPsi {
+            cpu: crate::types::PsiMetric {
+                some: crate::types::PsiValues {
+                    avg10: 12.5,
+                    avg60: 8.0,
+                    avg300: 4.5,
+                    total_us: 100000,
+                },
+                full: None,
+            },
+            memory: crate::types::PsiMetric {
+                some: crate::types::PsiValues {
+                    avg10: 2.1,
+                    avg60: 1.5,
+                    avg300: 0.8,
+                    total_us: 50000,
+                },
+                full: Some(crate::types::PsiValues {
+                    avg10: 0.5,
+                    avg60: 0.2,
+                    avg300: 0.1,
+                    total_us: 10000,
+                }),
+            },
+            io: crate::types::PsiMetric {
+                some: crate::types::PsiValues {
+                    avg10: 1.0,
+                    avg60: 0.8,
+                    avg300: 0.4,
+                    total_us: 20000,
+                },
+                full: None,
+            },
+        });
+        app.hw_sensors = vec![
+            crate::types::HwSensor {
+                name: "thinkpad".into(),
+                label: "Fan 1".into(),
+                temp_c: None,
+                fan_rpm: Some(2400),
+                crit_c: None,
+            },
+            crate::types::HwSensor {
+                name: "coretemp".into(),
+                label: "Package id 0".into(),
+                temp_c: Some(52.0),
+                fan_rpm: None,
+                crit_c: Some(100.0),
+            },
+        ];
+
+        terminal
+            .draw(|frame| {
+                overview(frame, frame.size(), &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("Kernel PSI"));
+        assert!(content.contains("CPU: 12.5%"));
+        assert!(content.contains("2400 RPM"));
     }
 }

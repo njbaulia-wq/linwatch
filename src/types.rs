@@ -83,6 +83,59 @@ pub struct ProcessInfo {
     pub is_dev: bool,
 }
 
+#[derive(Clone, Default, Debug)]
+pub struct ProcessDetail {
+    pub pid: u32,
+    pub ppid: u32,
+    pub name: String,
+    pub cmdline: String,
+    pub state: String,
+    pub threads: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub vm_peak_mb: f64,
+    pub vm_size_mb: f64,
+    pub vm_rss_mb: f64,
+    pub rss_anon_mb: f64,
+    pub rss_file_mb: f64,
+    pub rss_shmem_mb: f64,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub cancelled_write_bytes: u64,
+    pub open_fds: usize,
+    pub cwd: String,
+}
+
+#[derive(Clone, Copy, Default, Debug, Serialize)]
+pub struct PsiValues {
+    pub avg10: f64,
+    pub avg60: f64,
+    pub avg300: f64,
+    pub total_us: u64,
+}
+
+#[derive(Clone, Copy, Default, Debug, Serialize)]
+pub struct PsiMetric {
+    pub some: PsiValues,
+    pub full: Option<PsiValues>,
+}
+
+#[derive(Clone, Copy, Default, Debug, Serialize)]
+pub struct SystemPsi {
+    pub cpu: PsiMetric,
+    pub memory: PsiMetric,
+    pub io: PsiMetric,
+}
+
+#[derive(Clone, Default, Debug, Serialize)]
+pub struct HwSensor {
+    pub name: String,
+    pub label: String,
+    pub temp_c: Option<f64>,
+    pub fan_rpm: Option<u64>,
+    pub crit_c: Option<f64>,
+}
+
 pub struct NetInterface {
     pub name: String,
     pub down_bps: f64,
@@ -380,6 +433,7 @@ pub struct MonitorSnapshot {
     pub sample_status: String,
     pub environment: String,
     pub security_mode: String,
+    pub psi: Option<SystemPsi>,
 }
 
 /// Severity level used for color + symbol cues (accessibility-friendly).

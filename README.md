@@ -298,9 +298,11 @@ Interactive process management.
 |---------|-------------|
 | **Process Table** | PID, CPU%, MEM%, Command |
 | **Sparkline** | Inline 30-tick CPU history chart per process |
-| **Sort Modes** | Cycle via `S`: CPU↓, CPU↑, MEM↓, MEM↑, PID↑, PID↓ |
+| **Deep-Dive Inspector** | Full process inspector modal (`Enter`/`I`) displaying cmdline, cwd, VmPeak/VmRSS, I/O rates, open FDs, and signals (`SIGTERM`, `SIGKILL`, `SIGSTOP`, `SIGCONT`) |
+| **Tree View** | Process parent/child hierarchy view (`T`) |
+| **Sort Modes** | Cycle via `S`: CPU↓, CPU↑, MEM↓, MEM↑, PID↓, PID↑ |
 | **High-risk Detection** | Processes exceeding 90% CPU marked with warning |
-| **Search** | Press `/` to filter processes by name |
+| **Search & Filter** | Real-time substring filter (`/`) with instant selection |
 | **Terminate** | Select process with `↑`/`↓`, press `K` twice to send SIGTERM |
 
 ---
@@ -452,6 +454,7 @@ Invalid config values are warned about and clamped or ignored safely. Use `linwa
 
 | Key | Action |
 |-----|--------|
+| `Enter` / `I` | Open Process Deep-Dive Inspector (cmdline, cwd, VmPeak/VmRSS, I/O rates, open FDs, signals) |
 | `S` | Cycle sort order: CPU↓ → CPU↑ → MEM↓ → MEM↑ → PID↑ → PID↓ |
 | `T` | Toggle process tree hierarchy view (shows parent/child branches) |
 | `↑` | Move selection up in process list |
