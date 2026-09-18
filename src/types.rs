@@ -44,6 +44,8 @@ pub struct OpenPort {
     pub proto: String,
     pub state: String,
     pub service_name: String,
+    pub pid: Option<u32>,
+    pub process_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -64,6 +66,7 @@ pub struct MemInfo {
 #[derive(Clone, Serialize)]
 pub struct ProcessInfo {
     pub pid: u32,
+    pub ppid: u32,
     pub name: String,
     pub cpu_pct: f64,
     pub mem_mb: f64,

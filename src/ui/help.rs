@@ -49,9 +49,16 @@ pub fn help(frame: &mut Frame, area: Rect) {
             Span::styled("Cycle process sort", Style::default().fg(t.subtext0)),
         ]),
         Line::from(vec![
+            Span::styled(" T             ", Style::default().fg(t.accent_teal)),
+            Span::styled(
+                "Toggle process tree hierarchy",
+                Style::default().fg(t.subtext0),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled(" K             ", Style::default().fg(t.accent_teal)),
             Span::styled(
-                "Confirm SIGTERM for selected process",
+                "Terminate process (SIGTERM / SIGKILL)",
                 Style::default().fg(t.subtext0),
             ),
         ]),

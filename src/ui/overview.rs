@@ -980,6 +980,7 @@ mod tests {
             process_sort: ProcessSort::CpuDesc,
             process_history: std::collections::HashMap::new(),
             process_selected: 0,
+            is_tree_view: false,
             health_score: 85,
             alerts: vec!["System stable \u{2713} All thresholds nominal.".into()],
             successful_reads: 100,

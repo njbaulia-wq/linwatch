@@ -35,17 +35,20 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         .split(chunks[0])
         .to_vec();
 
+    let mode_label = if app.is_tree_view { "Tree" } else { "Flat" };
     let summary_line = Line::from(vec![
-        styled(format!("\u{2630} {} processes", app.process_count), t.text),
+        styled(format!("{} processes", app.process_count), t.text),
+        styled("  View: ", t.overlay1),
+        styled(mode_label, t.accent_teal).add_modifier(Modifier::BOLD),
         styled("  Sort: ", t.overlay1),
         styled(app.process_sort.label(), t.accent_blue).add_modifier(Modifier::BOLD),
         styled(
-            "  [S] sort  [/] search  [K] terminate  [\u{2191}/\u{2193}] select",
+            "  [T] tree  [S] sort  [/] search  [K] terminate  [\u{2191}/\u{2193}] select",
             t.overlay1,
         ),
     ]);
     frame.render_widget(
-        Paragraph::new(summary_line).block(panel_block("\u{2630} Process Overview")),
+        Paragraph::new(summary_line).block(panel_block("Process Overview")),
         header_chunks[0],
     );
 
@@ -53,7 +56,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         let cursor = if app.is_search_mode { "█" } else { "" };
         let search_line = Line::from(vec![
             Span::styled(
-                "  🔎 Search: ",
+                "  Search: ",
                 Style::default()
                     .fg(t.accent_blue)
                     .add_modifier(Modifier::BOLD),
@@ -89,7 +92,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         );
     }
 
-    let sorted = app.filtered_processes();
+    let sorted = app.filtered_process_tree();
 
     // Progressive column disclosure: hide low-priority columns first so the
     // table never overflows narrow terminals.
@@ -115,7 +118,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
 
     let p_rows = sorted
         .iter()
-        .map(|p| {
+        .map(|(p, prefix)| {
             let is_risk = p.is_high_risk;
             let is_dev = p.is_dev;
             let pid_color = if is_risk { t.accent_red } else { t.text };
@@ -147,6 +150,10 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                 t.text
             };
             let name_prefix = if is_dev { "[Dev] " } else { "" };
+            let display_name = truncate(
+                &p.name,
+                available_name_w.saturating_sub(prefix.len()).max(8),
+            );
 
             let mut cells = vec![
                 Cell::from(Span::styled(
@@ -179,12 +186,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                 )));
             }
             cells.push(Cell::from(Span::styled(
-                format!(
-                    "{} {}{}",
-                    sev.symbol(),
-                    name_prefix,
-                    truncate(&p.name, available_name_w)
-                ),
+                format!("{} {}{}{}", sev.symbol(), name_prefix, prefix, display_name),
                 Style::default().fg(name_color).add_modifier(if is_dev {
                     Modifier::BOLD
                 } else {
@@ -216,7 +218,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
 
     if p_rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("No process data").block(panel_block("☰ Process List")),
+            Paragraph::new("No process data").block(panel_block("Process List")),
             chunks[1],
         );
     } else {
@@ -265,7 +267,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         frame.render_stateful_widget(
             Table::new(p_rows, widths)
                 .header(Row::new(header_cells))
-                .block(panel_block("☰ Process List"))
+                .block(panel_block("Process List"))
                 .column_spacing(1)
                 .highlight_style(highlight_style)
                 .highlight_symbol("  \u{25b6} "),
@@ -277,7 +279,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
     // Confirm dialog floats over the table so selection context stays visible.
     if let Some(pid) = app.confirm_kill_pid {
         let name = app.confirm_kill_name.as_deref().unwrap_or("unknown");
-        let popup_w = chunks[1].width.saturating_sub(4).clamp(24, 56);
+        let popup_w = chunks[1].width.saturating_sub(4).clamp(28, 62);
         let popup_h = 5.min(chunks[1].height.max(3));
         let popup = Rect {
             x: chunks[1].x + (chunks[1].width.saturating_sub(popup_w)) / 2,
@@ -287,14 +289,15 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
         };
         let confirm_text = vec![
             Line::from(Span::styled(
-                format!(" Send SIGTERM to PID {pid} ({name})?"),
+                format!(" Terminate PID {pid} ({name})?"),
                 Style::default()
                     .fg(t.accent_red)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("[K] confirm  ", Style::default().fg(t.accent_red)),
+                Span::styled("[K/Enter] SIGTERM  ", Style::default().fg(t.accent_yellow)),
+                Span::styled("[9] SIGKILL  ", Style::default().fg(t.accent_red)),
                 Span::styled("[Esc] cancel", Style::default().fg(t.overlay1)),
             ]),
         ];
@@ -302,7 +305,7 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             Paragraph::new(confirm_text)
                 .alignment(Alignment::Center)
                 .block(panel_block_severity(
-                    "⚠ Confirm Terminate",
+                    "Confirm Terminate",
                     crate::types::Severity::Critical,
                 )),
             popup,
@@ -325,6 +328,7 @@ mod tests {
         let mut app = AppState::new(AppConfig::default());
         app.top_cpu_processes = vec![ProcessInfo {
             pid: 1234,
+            ppid: 1,
             name: "long-running-worker-process-daemon".to_string(),
             cpu_pct: 15.5,
             mem_mb: 256.0,
@@ -346,5 +350,51 @@ mod tests {
         // Verify buffer has content and shows part of the process name
         let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(content_str.contains("long-running-worker"));
+    }
+
+    #[test]
+    fn processes_tab_renders_tree_view() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = AppState::new(AppConfig::default());
+        app.is_tree_view = true;
+        app.top_cpu_processes = vec![
+            ProcessInfo {
+                pid: 100,
+                ppid: 1,
+                name: "system-master".to_string(),
+                cpu_pct: 10.0,
+                mem_mb: 100.0,
+                threads: 2,
+                state: "S".to_string(),
+                reason: "Normal".to_string(),
+                is_high_risk: false,
+                is_dev: false,
+            },
+            ProcessInfo {
+                pid: 101,
+                ppid: 100,
+                name: "worker-child".to_string(),
+                cpu_pct: 5.0,
+                mem_mb: 50.0,
+                threads: 1,
+                state: "S".to_string(),
+                reason: "Normal".to_string(),
+                is_high_risk: false,
+                is_dev: false,
+            },
+        ];
+
+        let mut table_state = TableState::default();
+        terminal
+            .draw(|frame| {
+                processes_tab(frame, frame.size(), &app, &mut table_state);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content_str.contains("system-master"));
+        assert!(content_str.contains("worker-child"));
     }
 }

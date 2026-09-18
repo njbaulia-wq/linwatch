@@ -46,6 +46,7 @@ pub struct AppState {
     pub process_sort: ProcessSort,
     pub process_history: HashMap<u32, VecDeque<f64>>,
     pub process_selected: usize,
+    pub is_tree_view: bool,
     pub health_score: u16,
     pub alerts: Vec<String>,
     pub successful_reads: u64,
@@ -143,6 +144,7 @@ impl AppState {
             process_sort: ProcessSort::CpuDesc,
             process_history: HashMap::new(),
             process_selected: 0,
+            is_tree_view: false,
             health_score: 100,
             alerts: Vec::new(),
             successful_reads: 0,
@@ -331,36 +333,62 @@ impl AppState {
         }
     }
 
-    pub fn filtered_processes(&self) -> Vec<&ProcessInfo> {
-        let mut procs: Vec<&ProcessInfo> = match self.process_sort {
-            ProcessSort::CpuDesc | ProcessSort::CpuAsc => {
-                let mut v = Vec::with_capacity(self.top_cpu_processes.len());
-                v.extend(self.top_cpu_processes.iter());
-                v
+    pub fn toggle_tree_view(&mut self) {
+        self.is_tree_view = !self.is_tree_view;
+        self.process_selected = 0;
+    }
+
+    pub fn filtered_process_tree(&self) -> Vec<(&ProcessInfo, String)> {
+        if !self.is_tree_view {
+            let mut procs: Vec<&ProcessInfo> = match self.process_sort {
+                ProcessSort::CpuDesc | ProcessSort::CpuAsc => {
+                    let mut v = Vec::with_capacity(self.top_cpu_processes.len());
+                    v.extend(self.top_cpu_processes.iter());
+                    v
+                }
+                ProcessSort::MemDesc | ProcessSort::MemAsc => {
+                    let mut v = Vec::with_capacity(self.top_mem_processes.len());
+                    v.extend(self.top_mem_processes.iter());
+                    v
+                }
+                ProcessSort::PidAsc | ProcessSort::PidDesc => {
+                    let mut seen = HashSet::with_capacity(
+                        self.top_cpu_processes.len() + self.top_mem_processes.len(),
+                    );
+                    let mut v = Vec::with_capacity(seen.capacity());
+                    v.extend(
+                        self.top_cpu_processes
+                            .iter()
+                            .chain(self.top_mem_processes.iter())
+                            .filter(|p| seen.insert(p.pid)),
+                    );
+                    v
+                }
+            };
+
+            if !self.process_search.is_empty() {
+                let search = self.process_search.to_lowercase();
+                let search_lower = search.as_str();
+                procs.retain(|p| {
+                    contains_case_insensitive(&p.name, search_lower)
+                        || pid_contains(p.pid, search_lower)
+                });
             }
-            ProcessSort::MemDesc | ProcessSort::MemAsc => {
-                let mut v = Vec::with_capacity(self.top_mem_processes.len());
-                v.extend(self.top_mem_processes.iter());
-                v
-            }
-            ProcessSort::PidAsc | ProcessSort::PidDesc => {
-                let mut seen = HashSet::with_capacity(
-                    self.top_cpu_processes.len() + self.top_mem_processes.len(),
-                );
-                let mut v = Vec::with_capacity(seen.capacity());
-                v.extend(
-                    self.top_cpu_processes
-                        .iter()
-                        .chain(self.top_mem_processes.iter())
-                        .filter(|p| seen.insert(p.pid)),
-                );
-                v
-            }
-        };
+            self.sort_processes(&mut procs);
+            return procs.into_iter().map(|p| (p, String::new())).collect();
+        }
+
+        let mut seen =
+            HashSet::with_capacity(self.top_cpu_processes.len() + self.top_mem_processes.len());
+        let mut procs: Vec<&ProcessInfo> = Vec::with_capacity(seen.capacity());
+        procs.extend(
+            self.top_cpu_processes
+                .iter()
+                .chain(self.top_mem_processes.iter())
+                .filter(|p| seen.insert(p.pid)),
+        );
 
         if !self.process_search.is_empty() {
-            // Lowercase the query once; match per-process without allocating
-            // a new String for every name/pid (hot path: called every frame).
             let search = self.process_search.to_lowercase();
             let search_lower = search.as_str();
             procs.retain(|p| {
@@ -368,6 +396,45 @@ impl AppState {
                     || pid_contains(p.pid, search_lower)
             });
         }
+        self.sort_processes(&mut procs);
+
+        let pid_set: HashSet<u32> = procs.iter().map(|p| p.pid).collect();
+        let mut children_map: HashMap<u32, Vec<&ProcessInfo>> = HashMap::new();
+        let mut roots: Vec<&ProcessInfo> = Vec::new();
+
+        for p in &procs {
+            if p.ppid == 0 || p.ppid == p.pid || !pid_set.contains(&p.ppid) {
+                roots.push(*p);
+            } else {
+                children_map.entry(p.ppid).or_default().push(*p);
+            }
+        }
+
+        let mut result = Vec::with_capacity(procs.len());
+        let mut visited = HashSet::with_capacity(procs.len());
+
+        for root in roots {
+            dfs_tree(
+                root,
+                "",
+                false,
+                true,
+                &children_map,
+                &mut visited,
+                &mut result,
+            );
+        }
+
+        for p in procs {
+            if visited.insert(p.pid) {
+                result.push((p, String::new()));
+            }
+        }
+
+        result
+    }
+
+    fn sort_processes(&self, procs: &mut [&ProcessInfo]) {
         match self.process_sort {
             ProcessSort::CpuDesc => procs.sort_unstable_by(|a, b| {
                 b.cpu_pct
@@ -392,7 +459,13 @@ impl AppState {
             ProcessSort::PidAsc => procs.sort_unstable_by_key(|p| p.pid),
             ProcessSort::PidDesc => procs.sort_unstable_by_key(|p| std::cmp::Reverse(p.pid)),
         }
-        procs
+    }
+
+    pub fn filtered_processes(&self) -> Vec<&ProcessInfo> {
+        self.filtered_process_tree()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
     }
 
     pub fn update(&mut self) {
@@ -661,6 +734,10 @@ impl AppState {
     }
 
     pub fn request_kill(&mut self) {
+        self.request_kill_signal(libc::SIGTERM);
+    }
+
+    pub fn request_kill_signal(&mut self, signal: i32) {
         let own_pid = std::process::id();
         let procs = self.filtered_processes();
         if let Some(p) = procs
@@ -681,10 +758,15 @@ impl AppState {
 
             match self.confirm_kill_pid {
                 Some(pid) if pid == p.0 => {
-                    match self.execute_kill(p.0) {
+                    let sig_label = if signal == libc::SIGKILL {
+                        "SIGKILL (9)"
+                    } else {
+                        "SIGTERM (15)"
+                    };
+                    match self.execute_kill(p.0, signal) {
                         Ok(()) => {
                             self.process_action_message =
-                                Some(format!("Sent SIGTERM to PID {} ({})", p.0, p.1));
+                                Some(format!("Sent {} to PID {} ({})", sig_label, p.0, p.1));
                         }
                         Err(err) => {
                             self.process_action_message =
@@ -697,8 +779,10 @@ impl AppState {
                 _ => {
                     self.confirm_kill_pid = Some(p.0);
                     self.confirm_kill_name = Some(p.1);
-                    self.process_action_message =
-                        Some(format!("Press K again to send SIGTERM to PID {}", p.0));
+                    self.process_action_message = Some(format!(
+                        "Terminate PID {}? [K/Enter] SIGTERM, [9] SIGKILL, [Esc] Cancel",
+                        p.0
+                    ));
                 }
             }
         }
@@ -710,11 +794,11 @@ impl AppState {
         self.process_action_message = Some(String::from("Process action cancelled"));
     }
 
-    fn execute_kill(&mut self, pid: u32) -> std::io::Result<()> {
+    fn execute_kill(&mut self, pid: u32, signal: i32) -> std::io::Result<()> {
         // SAFETY: libc::kill is a POSIX syscall that sends a signal to a process.
         // The pid is validated before calling (must be > 1 and not our own PID).
         // A return value of 0 means success; non-zero means error, caught by last_os_error.
-        let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
         if result == 0 {
             Ok(())
         } else {
@@ -879,6 +963,46 @@ impl AppState {
             title,
             detail,
         });
+    }
+}
+
+fn dfs_tree<'a>(
+    node: &'a ProcessInfo,
+    prefix: &str,
+    is_last: bool,
+    is_root: bool,
+    children: &HashMap<u32, Vec<&'a ProcessInfo>>,
+    visited: &mut HashSet<u32>,
+    result: &mut Vec<(&'a ProcessInfo, String)>,
+) {
+    if !visited.insert(node.pid) {
+        return;
+    }
+
+    let branch = if is_root {
+        String::new()
+    } else if is_last {
+        format!("{prefix}└─ ")
+    } else {
+        format!("{prefix}├─ ")
+    };
+
+    result.push((node, branch));
+
+    if let Some(kids) = children.get(&node.pid) {
+        let child_prefix = if is_root {
+            String::new()
+        } else if is_last {
+            format!("{prefix}   ")
+        } else {
+            format!("{prefix}│  ")
+        };
+
+        let count = kids.len();
+        for (i, &child) in kids.iter().enumerate() {
+            let last = i == count - 1;
+            dfs_tree(child, &child_prefix, last, false, children, visited, result);
+        }
     }
 }
 
@@ -1334,6 +1458,7 @@ mod tests {
             process_sort: ProcessSort::CpuDesc,
             process_history: HashMap::new(),
             process_selected: 0,
+            is_tree_view: false,
             health_score: 100,
             alerts: Vec::new(),
             successful_reads: 0,
@@ -1378,6 +1503,7 @@ mod tests {
     ) -> ProcessInfo {
         ProcessInfo {
             pid,
+            ppid: 1,
             name: name.to_string(),
             cpu_pct: cpu,
             mem_mb: mem,
@@ -1824,5 +1950,77 @@ mod tests {
     fn filtered_processes_empty_when_no_data() {
         let app = bare_state();
         assert!(app.filtered_processes().is_empty());
+    }
+
+    #[test]
+    fn toggle_tree_view_switches_mode_and_resets_selection() {
+        let mut app = bare_state();
+        app.process_selected = 5;
+        assert!(!app.is_tree_view);
+        app.toggle_tree_view();
+        assert!(app.is_tree_view);
+        assert_eq!(app.process_selected, 0);
+        app.toggle_tree_view();
+        assert!(!app.is_tree_view);
+    }
+
+    #[test]
+    fn tree_view_formats_hierarchy_and_branch_prefixes() {
+        let mut app = bare_state();
+        let mut p1 = make_process(100, "parent", 10.0, 100.0, 1, "S");
+        p1.ppid = 1;
+        let mut p2 = make_process(101, "child_a", 5.0, 50.0, 1, "S");
+        p2.ppid = 100;
+        let mut p3 = make_process(102, "child_b", 2.0, 30.0, 1, "S");
+        p3.ppid = 100;
+        let mut p4 = make_process(103, "grandchild", 1.0, 20.0, 1, "S");
+        p4.ppid = 101;
+
+        app.top_cpu_processes = vec![p1, p2, p3, p4];
+        app.is_tree_view = true;
+
+        let tree = app.filtered_process_tree();
+        assert_eq!(tree.len(), 4);
+        assert_eq!(tree[0].0.pid, 100);
+        assert_eq!(tree[0].1, ""); // root has empty prefix
+        assert_eq!(tree[1].0.pid, 101);
+        assert_eq!(tree[1].1, "├─ "); // first child
+        assert_eq!(tree[2].0.pid, 103);
+        assert_eq!(tree[2].1, "│  └─ "); // grandchild under first child
+        assert_eq!(tree[3].0.pid, 102);
+        assert_eq!(tree[3].1, "└─ "); // last child
+    }
+
+    #[test]
+    fn request_kill_signal_workflow() {
+        let mut app = bare_state();
+        let p = make_process(99999, "test_proc", 10.0, 100.0, 1, "S");
+        app.top_cpu_processes = vec![p];
+
+        // First press: enters confirmation
+        app.request_kill();
+        assert_eq!(app.confirm_kill_pid, Some(99999));
+        assert!(app
+            .process_action_message
+            .as_ref()
+            .unwrap()
+            .contains("Terminate PID 99999"));
+
+        // Cancel test
+        app.cancel_kill();
+        assert_eq!(app.confirm_kill_pid, None);
+
+        // First press again: enters confirmation
+        app.request_kill();
+        assert_eq!(app.confirm_kill_pid, Some(99999));
+
+        // Signal 9 press (will fail gracefully because 99999 is non-existent process in test)
+        app.request_kill_signal(libc::SIGKILL);
+        assert_eq!(app.confirm_kill_pid, None);
+        assert!(app
+            .process_action_message
+            .as_ref()
+            .unwrap()
+            .contains("PID 99999"));
     }
 }

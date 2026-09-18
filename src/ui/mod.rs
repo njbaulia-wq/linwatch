@@ -130,10 +130,33 @@ pub fn run_app<B: Backend>(
                                     process_table_state.select(Some(0));
                                 }
                             }
+                            crossterm::event::KeyCode::Char('t')
+                            | crossterm::event::KeyCode::Char('T') => {
+                                if app.active_tab == ViewTab::Processes {
+                                    app.toggle_tree_view();
+                                    process_table_state.select(Some(app.process_selected));
+                                }
+                            }
                             crossterm::event::KeyCode::Char('k')
                             | crossterm::event::KeyCode::Char('K') => {
                                 if app.active_tab == ViewTab::Processes {
                                     app.request_kill();
+                                    process_table_state.select(Some(app.process_selected));
+                                }
+                            }
+                            crossterm::event::KeyCode::Enter => {
+                                if app.active_tab == ViewTab::Processes
+                                    && app.confirm_kill_pid.is_some()
+                                {
+                                    app.request_kill_signal(libc::SIGTERM);
+                                    process_table_state.select(Some(app.process_selected));
+                                }
+                            }
+                            crossterm::event::KeyCode::Char('9') => {
+                                if app.active_tab == ViewTab::Processes
+                                    && app.confirm_kill_pid.is_some()
+                                {
+                                    app.request_kill_signal(libc::SIGKILL);
                                     process_table_state.select(Some(app.process_selected));
                                 }
                             }

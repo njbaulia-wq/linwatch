@@ -1,6 +1,6 @@
 [package]
 name = "linwatch"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 description = "Lightweight Linux TUI monitor with root-cause insights, event timeline, and JSON automation."
 readme = "README.md"

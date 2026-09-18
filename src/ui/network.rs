@@ -2,8 +2,9 @@ use crate::state::AppState;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Paragraph, Row, Sparkline, Table},
+    widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Row, Table},
     Frame,
 };
 
@@ -17,7 +18,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(7),
+            Constraint::Length(9),
             Constraint::Min(6),
         ])
         .split(area);
@@ -49,7 +50,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
-    render_network_sparkline(
+    render_network_braille_chart(
         frame,
         graph_chunks[0],
         "↓ Download Activity",
@@ -57,7 +58,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         app.net_down_bps,
         t.accent_teal,
     );
-    render_network_sparkline(
+    render_network_braille_chart(
         frame,
         graph_chunks[1],
         "↑ Upload Activity",
@@ -124,26 +125,24 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         .open_ports
         .iter()
         .map(|p| {
-            let service_color = if p.service_name != "Other" {
-                t.accent_teal
-            } else {
-                t.overlay1
+            let (proc_service, has_proc) = match (&p.process_name, p.pid) {
+                (Some(name), Some(pid)) => (format!("{name} ({pid})"), true),
+                _ if p.service_name != "Other" => (p.service_name.clone(), true),
+                _ => (String::from("-"), false),
             };
+            let proc_color = if has_proc { t.accent_teal } else { t.overlay1 };
             Row::new(vec![
                 Cell::from(p.proto.as_str()),
                 Cell::from(p.ip.as_str()),
                 Cell::from(p.port.to_string()),
-                Cell::from(Span::styled(
-                    p.service_name.as_str(),
-                    Style::default().fg(service_color),
-                )),
+                Cell::from(Span::styled(proc_service, Style::default().fg(proc_color))),
                 Cell::from(p.state.as_str()),
             ])
             .style(Style::default().fg(t.text))
         })
         .collect::<Vec<_>>();
 
-    // Narrow: drop Service/State columns so Proto/IP/Port always fit.
+    // Narrow: drop State column and compact Process so Proto/IP/Port/Process fit.
     let compact_ports = area.width < 100;
 
     if port_rows.is_empty() {
@@ -156,10 +155,16 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
             .open_ports
             .iter()
             .map(|p| {
+                let proc_service = match (&p.process_name, p.pid) {
+                    (Some(name), Some(pid)) => format!("{name} ({pid})"),
+                    _ if p.service_name != "Other" => p.service_name.clone(),
+                    _ => String::from("-"),
+                };
                 Row::new(vec![
                     Cell::from(p.proto.as_str()),
                     Cell::from(p.ip.as_str()),
                     Cell::from(p.port.to_string()),
+                    Cell::from(proc_service),
                 ])
                 .style(Style::default().fg(t.text))
             })
@@ -171,12 +176,14 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                     Constraint::Length(6),
                     Constraint::Min(13),
                     Constraint::Length(6),
+                    Constraint::Length(18),
                 ],
             )
             .header(Row::new(vec![
                 Cell::from(header_col("Proto")),
                 Cell::from(header_col("IP Address")),
                 Cell::from(header_col("Port")),
+                Cell::from(header_col("Process / Service")),
             ]))
             .block(panel_block(" Listening Ports "))
             .column_spacing(1),
@@ -190,7 +197,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                     Constraint::Length(6),
                     Constraint::Min(13),
                     Constraint::Length(6),
-                    Constraint::Length(15),
+                    Constraint::Length(22),
                     Constraint::Length(8),
                 ],
             )
@@ -198,7 +205,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(header_col("Proto")),
                 Cell::from(header_col("IP Address")),
                 Cell::from(header_col("Port")),
-                Cell::from(header_col("Service")),
+                Cell::from(header_col("Process / Service")),
                 Cell::from(header_col("State")),
             ]))
             .block(panel_block(" Listening Ports "))
@@ -208,7 +215,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 }
 
-fn render_network_sparkline(
+fn render_network_braille_chart(
     frame: &mut Frame,
     area: Rect,
     title: &str,
@@ -217,14 +224,23 @@ fn render_network_sparkline(
     color: ratatui::style::Color,
 ) {
     let t = theme::get();
-    let data = history
-        .iter()
-        .rev()
-        .take(50)
-        .rev()
-        .map(|(_, value)| value.max(0.0).round() as u64)
-        .collect::<Vec<_>>();
-    let max = data.iter().copied().max().unwrap_or(1).max(1);
+    if history.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Collecting throughput data...").block(panel_block(title)),
+            area,
+        );
+        return;
+    }
+
+    let points: Vec<(f64, f64)> = history.iter().copied().collect();
+    let x_start = history.front().map(|p| p.0).unwrap_or(0.0);
+    let x_end = history
+        .back()
+        .map(|p| p.0)
+        .unwrap_or(1.0)
+        .max(x_start + 1.0);
+
+    let peak = history.iter().map(|(_, v)| *v).fold(0.0f64, f64::max);
     let avg = if history.is_empty() {
         0.0
     } else {
@@ -237,27 +253,117 @@ fn render_network_sparkline(
             / history.len().min(10) as f64
     };
 
+    let y_max = (peak * 1.15).max(1024.0);
+    let half_str = format!("{}/s", format_bytes(y_max * 0.5));
+    let max_str = format!("{}/s", format_bytes(y_max));
+
     let block_title = format!(
-        "{}  now {}/s  avg {}/s",
-        title,
+        "{title} · now {}/s · peak {}/s · avg {}/s",
         format_bytes(current),
+        format_bytes(peak),
         format_bytes(avg)
     );
 
-    let sparkline = if data.len() >= 2 {
-        Sparkline::default()
-            .data(&data)
-            .max(max)
-            .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-            .block(panel_block(block_title))
-    } else {
-        Sparkline::default()
-            .data(&[0])
-            .max(1)
-            .style(Style::default().fg(t.overlay1))
-            .block(panel_block(block_title))
-    };
-    frame.render_widget(sparkline, area);
+    let dataset = Dataset::default()
+        .marker(Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+        .data(&points);
+
+    let chart = Chart::new(vec![dataset])
+        .block(panel_block(block_title))
+        .x_axis(
+            Axis::default()
+                .bounds([x_start, x_end])
+                .labels(vec![
+                    Span::styled("-120s", Style::default().fg(t.overlay1)),
+                    Span::styled("now", Style::default().fg(t.overlay1)),
+                ])
+                .style(Style::default().fg(t.overlay1)),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([0.0, y_max])
+                .labels(vec![
+                    Span::styled("0", Style::default().fg(t.overlay1)),
+                    Span::styled(half_str, Style::default().fg(t.overlay1)),
+                    Span::styled(max_str, Style::default().fg(t.overlay1)),
+                ])
+                .style(Style::default().fg(t.overlay1)),
+        );
+    frame.render_widget(chart, area);
 }
 
 use ratatui::widgets::Cell;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::*;
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::collections::VecDeque;
+
+    #[test]
+    fn network_tab_renders_with_process_mapped_ports() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = AppState::new(AppConfig::default());
+        app.open_ports = vec![
+            OpenPort {
+                port: 22,
+                ip: "0.0.0.0".to_string(),
+                proto: "TCP".to_string(),
+                state: "LISTEN".to_string(),
+                service_name: "SSH".to_string(),
+                pid: Some(512),
+                process_name: Some("sshd".to_string()),
+            },
+            OpenPort {
+                port: 8080,
+                ip: "127.0.0.1".to_string(),
+                proto: "TCP".to_string(),
+                state: "LISTEN".to_string(),
+                service_name: "HTTP Alt/Java".to_string(),
+                pid: None,
+                process_name: None,
+            },
+        ];
+
+        terminal
+            .draw(|frame| {
+                network_tab(frame, frame.size(), &app);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content_str.contains("sshd (512)"));
+        assert!(content_str.contains("HTTP Alt/Java"));
+    }
+
+    #[test]
+    fn network_tab_renders_braille_chart_history() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = AppState::new(AppConfig::default());
+        let mut history = VecDeque::new();
+        for i in 0..60 {
+            history.push_back((i as f64, (i * 1024) as f64));
+        }
+        app.net_down_history = history.clone();
+        app.net_up_history = history;
+        app.net_down_bps = 50_000.0;
+        app.net_up_bps = 25_000.0;
+
+        terminal
+            .draw(|frame| {
+                network_tab(frame, frame.size(), &app);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content_str.contains("Download Activity"));
+        assert!(content_str.contains("Upload Activity"));
+    }
+}

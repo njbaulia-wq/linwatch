@@ -106,11 +106,11 @@ Download from the [Releases page](https://github.com/njbaulia-wq/linwatch/releas
 
 ```bash
 # x86_64
-curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.9/linwatch-v0.1.9-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.10/linwatch-v0.1.10-x86_64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 
 # aarch64
-curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.9/linwatch-v0.1.9-aarch64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.10/linwatch-v0.1.10-aarch64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 ```
 
@@ -453,9 +453,10 @@ Invalid config values are warned about and clamped or ignored safely. Use `linwa
 | Key | Action |
 |-----|--------|
 | `S` | Cycle sort order: CPU↓ → CPU↑ → MEM↓ → MEM↑ → PID↑ → PID↓ |
+| `T` | Toggle process tree hierarchy view (shows parent/child branches) |
 | `↑` | Move selection up in process list |
 | `↓` | Move selection down in process list |
-| `K` | Terminate selected process (first press marks, second confirms with SIGTERM) |
+| `K` | Terminate selected process (`[K/Enter]` sends SIGTERM, `[9]` sends SIGKILL, `[Esc]` cancels) |
 | `/` | Enter search mode; type to filter processes by name; `Esc` to exit |
 
 ---

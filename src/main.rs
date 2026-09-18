@@ -393,7 +393,8 @@ Keys:
   1-7    Switch tab
   Tab    Next tab
   S      Cycle process sort
-  K      Terminate selected process with SIGTERM (press again to confirm)
+  T      Toggle process tree hierarchy
+  K      Terminate process ([K/Enter] SIGTERM, [9] SIGKILL)
   /      Search process
   +/-    Change interval",
         env!("CARGO_PKG_VERSION")

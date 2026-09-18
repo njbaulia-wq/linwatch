@@ -1,6 +1,6 @@
 use crate::types::*;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs;
 use std::path::Path;
@@ -111,22 +111,101 @@ pub fn has_systemd() -> bool {
 
 #[must_use]
 pub fn read_open_ports() -> Option<Vec<OpenPort>> {
-    let mut ports = Vec::new();
+    let mut raw_ports = Vec::new();
     if let Ok(content) = fs::read_to_string("/proc/net/tcp") {
-        parse_socket_file(&content, "TCP", &mut ports);
+        parse_socket_file(&content, "TCP", &mut raw_ports);
     }
     if let Ok(content) = fs::read_to_string("/proc/net/udp") {
-        parse_socket_file(&content, "UDP", &mut ports);
+        parse_socket_file(&content, "UDP", &mut raw_ports);
     }
     if let Ok(content) = fs::read_to_string("/proc/net/tcp6") {
-        parse_socket_file(&content, "TCP6", &mut ports);
+        parse_socket_file(&content, "TCP6", &mut raw_ports);
     }
     if let Ok(content) = fs::read_to_string("/proc/net/udp6") {
-        parse_socket_file(&content, "UDP6", &mut ports);
+        parse_socket_file(&content, "UDP6", &mut raw_ports);
     }
-    ports.sort_by_key(|p| p.port);
-    ports.dedup_by(|a, b| a.port == b.port && a.proto == b.proto);
+    raw_ports.sort_by_key(|(p, _)| p.port);
+    raw_ports.dedup_by(|(a, _), (b, _)| a.port == b.port && a.proto == b.proto);
+
+    let target_inodes: HashSet<u64> = raw_ports
+        .iter()
+        .map(|(_, inode)| *inode)
+        .filter(|&inode| inode > 0)
+        .collect();
+
+    let inode_map = build_socket_inode_map(&target_inodes);
+
+    let mut ports = Vec::with_capacity(raw_ports.len());
+    for (mut port, inode) in raw_ports {
+        if let Some((pid, name)) = inode_map.get(&inode) {
+            port.pid = Some(*pid);
+            port.process_name = Some(name.clone());
+        }
+        ports.push(port);
+    }
     Some(ports)
+}
+
+fn build_socket_inode_map(target_inodes: &HashSet<u64>) -> HashMap<u64, (u32, String)> {
+    let mut map = HashMap::new();
+    if target_inodes.is_empty() {
+        return map;
+    }
+
+    let Ok(proc_entries) = fs::read_dir("/proc") else {
+        return map;
+    };
+
+    for entry in proc_entries.flatten() {
+        if map.len() == target_inodes.len() {
+            break;
+        }
+        let file_name = entry.file_name();
+        let Some(name_str) = file_name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = name_str.parse::<u32>() else {
+            continue;
+        };
+
+        let fd_path = entry.path().join("fd");
+        let Ok(fd_entries) = fs::read_dir(fd_path) else {
+            continue;
+        };
+
+        let mut comm_cached: Option<String> = None;
+
+        for fd_entry in fd_entries.flatten() {
+            if let Ok(link) = fs::read_link(fd_entry.path()) {
+                let link_str = link.to_string_lossy();
+                if let Some(inode_str) = link_str
+                    .strip_prefix("socket:[")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
+                    if let Ok(inode) = inode_str.parse::<u64>() {
+                        if target_inodes.contains(&inode) && !map.contains_key(&inode) {
+                            let proc_name = match &comm_cached {
+                                Some(name) => name.clone(),
+                                None => {
+                                    let comm = fs::read_to_string(format!("/proc/{pid}/comm"))
+                                        .map(|s| s.trim().to_string())
+                                        .unwrap_or_else(|_| String::from("unknown"));
+                                    comm_cached = Some(comm.clone());
+                                    comm
+                                }
+                            };
+                            map.insert(inode, (pid, proc_name));
+                            if map.len() == target_inodes.len() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    map
 }
 
 fn identify_service_port(port: u16) -> String {
@@ -148,14 +227,15 @@ fn identify_service_port(port: u16) -> String {
     }
 }
 
-fn parse_socket_file(content: &str, proto: &str, ports: &mut Vec<OpenPort>) {
+fn parse_socket_file(content: &str, proto: &str, ports: &mut Vec<(OpenPort, u64)>) {
     for line in content.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 4 {
+        if parts.len() < 10 {
             continue;
         }
         let local_addr = parts[1];
         let state_hex = parts[3];
+        let inode: u64 = parts[9].parse().unwrap_or(0);
         let is_tcp = proto == "TCP" || proto == "TCP6";
         let state = match (is_tcp, state_hex) {
             (true, "0A") => "LISTEN",
@@ -174,13 +254,18 @@ fn parse_socket_file(content: &str, proto: &str, ports: &mut Vec<OpenPort>) {
             };
             if let (Ok(port), Ok(ip)) = (u16::from_str_radix(port_hex, 16), ip) {
                 let service_name = identify_service_port(port);
-                ports.push(OpenPort {
-                    port,
-                    ip,
-                    proto: proto.to_string(),
-                    state: state.to_string(),
-                    service_name,
-                });
+                ports.push((
+                    OpenPort {
+                        port,
+                        ip,
+                        proto: proto.to_string(),
+                        state: state.to_string(),
+                        service_name,
+                        pid: None,
+                        process_name: None,
+                    },
+                    inode,
+                ));
             }
         }
     }
@@ -1173,7 +1258,8 @@ fn parse_process_stat(
     // 20 vsize, 21 rss.
     let mut fields = content[close + 1..].split_whitespace();
     let state = fields.next()?.to_owned();
-    for _ in 0..10 {
+    let ppid: u32 = fields.next()?.parse().unwrap_or(0);
+    for _ in 0..9 {
         fields.next()?;
     }
     let utime: u64 = fields.next()?.parse().unwrap_or(0);
@@ -1199,6 +1285,7 @@ fn parse_process_stat(
     Some(ParsedProcess {
         info: ProcessInfo {
             pid,
+            ppid,
             name,
             cpu_pct,
             mem_mb,
@@ -1282,10 +1369,11 @@ mod tests {
         parse_socket_file(content, "TCP", &mut ports);
 
         assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0].ip, "127.0.0.1");
-        assert_eq!(ports[0].port, 8080);
-        assert_eq!(ports[0].state, "LISTEN");
-        assert_eq!(ports[0].service_name, "HTTP Alt/Java");
+        assert_eq!(ports[0].0.ip, "127.0.0.1");
+        assert_eq!(ports[0].0.port, 8080);
+        assert_eq!(ports[0].0.state, "LISTEN");
+        assert_eq!(ports[0].0.service_name, "HTTP Alt/Java");
+        assert_eq!(ports[0].1, 1);
     }
 
     #[test]
@@ -1298,9 +1386,10 @@ mod tests {
         parse_socket_file(content, "TCP6", &mut ports);
 
         assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0].ip, "::1");
-        assert_eq!(ports[0].port, 8080);
-        assert_eq!(ports[0].state, "LISTEN");
+        assert_eq!(ports[0].0.ip, "::1");
+        assert_eq!(ports[0].0.port, 8080);
+        assert_eq!(ports[0].0.state, "LISTEN");
+        assert_eq!(ports[0].1, 1);
     }
 
     #[test]
@@ -1356,6 +1445,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed.info.pid, 123);
+        assert_eq!(parsed.info.ppid, 0);
         assert_eq!(parsed.info.name, "worker process");
         assert_eq!(parsed.info.state, "S");
         assert_eq!(parsed.info.threads, 4);
@@ -1438,5 +1528,30 @@ mod tests {
 
         assert_eq!(primary_mount(&mounts).unwrap().mount_point, "/");
         assert!(primary_mount(&[]).is_none());
+    }
+
+    #[test]
+    fn parses_process_stat_extracts_ppid() {
+        let mut previous = HashMap::new();
+        previous.insert(123, 100);
+        let parsed = parse_process_stat(
+            123,
+            "123 (child) S 999 0 0 0 0 0 0 0 0 0 100 50 0 0 20 0 4 0 0 0 256",
+            &previous,
+            200,
+            4096.0,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.info.pid, 123);
+        assert_eq!(parsed.info.ppid, 999);
+        assert_eq!(parsed.info.name, "child");
+    }
+
+    #[test]
+    fn build_socket_inode_map_empty_set_returns_empty() {
+        let empty_set = HashSet::new();
+        let map = build_socket_inode_map(&empty_set);
+        assert!(map.is_empty());
     }
 }
