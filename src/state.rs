@@ -623,7 +623,7 @@ impl AppState {
                 p.is_high_risk = p.cpu_pct > 90.0;
             }
 
-            self.sort_and_truncate_processes(&mut summary.top_cpu, &mut summary.top_mem, 10);
+            self.sort_and_truncate_processes(&mut summary.top_cpu, &mut summary.top_mem, 30);
             // Reuse the previous map's allocation instead of dropping it every
             // tick (validated: HashMap::clear retains capacity for reuse).
             self.previous_process_totals.clear();
@@ -694,7 +694,11 @@ impl AppState {
         if let Some(current) = self.capture("network", collector::read_network_totals()) {
             let now = Instant::now();
             if let Some((previous, prev_time)) = &self.previous_net {
-                let elapsed = now.duration_since(*prev_time).as_secs_f64().max(0.1);
+                let elapsed = now
+                    .checked_duration_since(*prev_time)
+                    .unwrap_or_default()
+                    .as_secs_f64()
+                    .max(0.1);
                 self.interfaces = current
                     .iter()
                     .map(|(name, &(rx, tx))| {
@@ -721,7 +725,11 @@ impl AppState {
         if let Some(current) = self.capture("disk_io", collector::read_disk_io_totals()) {
             let now = Instant::now();
             if let Some((previous, prev_time)) = &self.previous_disk_io {
-                let elapsed = now.duration_since(*prev_time).as_secs_f64().max(0.1);
+                let elapsed = now
+                    .checked_duration_since(*prev_time)
+                    .unwrap_or_default()
+                    .as_secs_f64()
+                    .max(0.1);
                 self.disk_io = current
                     .iter()
                     .map(|(name, &(rd, wr))| {
@@ -740,10 +748,18 @@ impl AppState {
 
                 let total_read: f64 = self.disk_io.iter().map(|d| d.read_bps).sum();
                 let total_write: f64 = self.disk_io.iter().map(|d| d.write_bps).sum();
-                self.disk_read_bps = total_read;
-                self.disk_write_bps = total_write;
-                push_history(&mut self.disk_read_history, self.counter, total_read);
-                push_history(&mut self.disk_write_history, self.counter, total_write);
+                self.disk_read_bps = normalize_rate(total_read);
+                self.disk_write_bps = normalize_rate(total_write);
+                push_history(
+                    &mut self.disk_read_history,
+                    self.counter,
+                    self.disk_read_bps,
+                );
+                push_history(
+                    &mut self.disk_write_history,
+                    self.counter,
+                    self.disk_write_bps,
+                );
             }
             self.previous_disk_io = Some((current, now));
         }
@@ -758,7 +774,11 @@ impl AppState {
             .collect();
 
         if let Some((previous, prev_time)) = &self.previous_gpu_rc6 {
-            let elapsed_ms = now.duration_since(*prev_time).as_secs_f64() * 1000.0;
+            let elapsed_ms = now
+                .checked_duration_since(*prev_time)
+                .unwrap_or_default()
+                .as_secs_f64()
+                * 1000.0;
             if elapsed_ms > 0.0 {
                 for gpu in &mut self.gpus {
                     let Some(current_rc6) = gpu.rc6_residency_ms else {
@@ -841,8 +861,20 @@ impl AppState {
     }
 
     fn execute_kill(&mut self, pid: u32, signal: i32) -> std::io::Result<()> {
+        if pid <= 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Refusing to signal PID 1 (init/systemd)",
+            ));
+        }
+        if pid == std::process::id() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Refusing to signal own process (linwatch)",
+            ));
+        }
         // SAFETY: libc::kill is a POSIX syscall that sends a signal to a process.
-        // The pid is validated before calling (must be > 1 and not our own PID).
+        // The pid is validated above (must be > 1 and not our own PID).
         // A return value of 0 means success; non-zero means error, caught by last_os_error.
         let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
         if result == 0 {
@@ -877,6 +909,8 @@ impl AppState {
             .unwrap_or_default();
         if let Some(detail) = collector::read_process_detail(pid, &name) {
             self.inspect_process_detail = Some(detail);
+        } else if let Some(detail) = &mut self.inspect_process_detail {
+            detail.state = "EXITED".to_string();
         }
     }
 
@@ -1254,7 +1288,7 @@ fn calculate_cpu_usage(prev: CpuSample, curr: CpuSample) -> f64 {
     if total == 0 {
         0.0
     } else {
-        (1.0 - (idle as f64 / total as f64)) * 100.0
+        ((1.0 - (idle as f64 / total as f64)) * 100.0).clamp(0.0, 100.0)
     }
 }
 
@@ -1262,7 +1296,8 @@ fn push_history(history: &mut VecDeque<(f64, f64)>, counter: u64, value: f64) {
     if history.len() >= HISTORY_LIMIT {
         history.pop_front();
     }
-    history.push_back((counter as f64, value));
+    let safe_value = if value.is_finite() { value } else { 0.0 };
+    history.push_back((counter as f64, safe_value));
 }
 
 /// ASCII fast-path substring search against an already-lowercased needle.
@@ -1329,7 +1364,7 @@ fn pid_contains(pid: u32, needle: &str) -> bool {
 }
 
 fn normalize_rate(value: f64) -> f64 {
-    if value.abs() < f64::EPSILON {
+    if !value.is_finite() || value <= f64::EPSILON {
         0.0
     } else {
         value
@@ -2176,5 +2211,158 @@ mod tests {
         app.open_inspector(99999);
         app.send_inspected_signal(libc::SIGSTOP);
         assert!(app.process_action_message.is_some());
+    }
+
+    #[test]
+    fn execute_kill_safety_guards() {
+        let mut app = bare_state();
+        let own_pid = std::process::id();
+
+        // PID 0 (all processes in group) must be rejected
+        let res_0 = app.execute_kill(0, libc::SIGTERM);
+        assert!(res_0.is_err());
+        assert_eq!(
+            res_0.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        // PID 1 (init/systemd) must be rejected
+        let res_1 = app.execute_kill(1, libc::SIGKILL);
+        assert!(res_1.is_err());
+        assert_eq!(
+            res_1.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        // Own PID must be rejected
+        let res_own = app.execute_kill(own_pid, libc::SIGTERM);
+        assert!(res_own.is_err());
+        assert_eq!(
+            res_own.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        // send_inspected_signal on PID 1 must be rejected safely
+        app.open_inspector(1);
+        app.send_inspected_signal(libc::SIGKILL);
+        assert!(app
+            .process_action_message
+            .as_ref()
+            .unwrap()
+            .contains("Refusing to signal PID 1"));
+    }
+
+    #[test]
+    fn normalize_rate_handles_nan_and_infinities() {
+        assert_eq!(normalize_rate(f64::NAN), 0.0);
+        assert_eq!(normalize_rate(f64::INFINITY), 0.0);
+        assert_eq!(normalize_rate(f64::NEG_INFINITY), 0.0);
+        assert_eq!(normalize_rate(-10.5), 0.0);
+        assert_eq!(normalize_rate(0.0), 0.0);
+        assert_eq!(normalize_rate(1e-18), 0.0);
+        assert_eq!(normalize_rate(42.5), 42.5);
+    }
+
+    #[test]
+    fn calculate_cpu_usage_clamps_underflow() {
+        // Normal usage
+        let prev = CpuSample {
+            idle: 50,
+            total: 100,
+        };
+        let curr = CpuSample {
+            idle: 60,
+            total: 120,
+        };
+        let usage = calculate_cpu_usage(prev, curr);
+        assert!((usage - 50.0).abs() < 1e-6);
+
+        // Tick jitter where idle > total
+        let prev_jitter = CpuSample {
+            idle: 50,
+            total: 100,
+        };
+        let curr_jitter = CpuSample {
+            idle: 80,
+            total: 110,
+        };
+        let usage_jitter = calculate_cpu_usage(prev_jitter, curr_jitter);
+        assert_eq!(usage_jitter, 0.0);
+    }
+
+    #[test]
+    fn push_history_rejects_nan_and_inf() {
+        let mut hist = VecDeque::new();
+        push_history(&mut hist, 1, f64::NAN);
+        push_history(&mut hist, 2, f64::INFINITY);
+        push_history(&mut hist, 3, 55.5);
+
+        assert_eq!(hist.len(), 3);
+        assert_eq!(hist[0], (1.0, 0.0));
+        assert_eq!(hist[1], (2.0, 0.0));
+        assert_eq!(hist[2], (3.0, 55.5));
+    }
+
+    #[test]
+    fn soak_test_long_running_memory_boundedness() {
+        let mut app = bare_state();
+        // Simulate 3,000 continuous tick samples with high process churn
+        for tick in 0..3000 {
+            app.counter += 1;
+            app.tick_count += 1;
+            let cpu_val = ((tick % 100) as f64).sin().abs() * 100.0;
+            app.cpu_usage = cpu_val;
+            push_history(&mut app.cpu_history, app.counter, cpu_val);
+            push_history(&mut app.mem_history, app.counter, 50.0);
+            push_history(&mut app.net_down_history, app.counter, 1024.0);
+            push_history(&mut app.disk_read_history, app.counter, 2048.0);
+
+            // Churn 10 new processes every tick
+            let base_pid = (tick * 10) as u32;
+            let mut top_cpu = Vec::new();
+            for i in 0..10 {
+                let pid = base_pid + i;
+                top_cpu.push(make_process(
+                    pid,
+                    &format!("churn_proc_{pid}"),
+                    10.0,
+                    50.0,
+                    1,
+                    "R",
+                ));
+                let hist = app
+                    .process_history
+                    .entry(pid)
+                    .or_insert_with(|| VecDeque::with_capacity(SPARKLINE_LIMIT));
+                hist.push_back(10.0);
+                while hist.len() > SPARKLINE_LIMIT {
+                    hist.pop_front();
+                }
+            }
+            app.top_cpu_processes = top_cpu;
+
+            // Eviction pass (same as state.rs line 637)
+            let active: HashSet<u32> = app
+                .top_cpu_processes
+                .iter()
+                .chain(app.top_mem_processes.iter())
+                .map(|p| p.pid)
+                .collect();
+            app.process_history.retain(|pid, _| active.contains(pid));
+
+            // Record events (triggers event limit enforcement)
+            app.record_state_events();
+        }
+
+        assert_eq!(app.cpu_history.len(), HISTORY_LIMIT);
+        assert_eq!(app.mem_history.len(), HISTORY_LIMIT);
+        assert_eq!(app.net_down_history.len(), HISTORY_LIMIT);
+        assert_eq!(app.disk_read_history.len(), HISTORY_LIMIT);
+        assert!(app.events.len() <= EVENT_LIMIT);
+        assert!(app.process_history.len() <= 10);
+        // Verify all histories contain only valid finite numbers
+        for (_, val) in &app.cpu_history {
+            assert!(val.is_finite());
+        }
     }
 }

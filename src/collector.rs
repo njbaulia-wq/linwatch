@@ -272,7 +272,7 @@ fn parse_socket_file(content: &str, proto: &str, ports: &mut Vec<(OpenPort, u64)
 }
 
 fn parse_hex_ip(hex: &str) -> Result<String, ()> {
-    if hex.len() != 8 {
+    if hex.len() != 8 || !hex.is_ascii() {
         return Err(());
     }
     let bytes = [
@@ -1346,10 +1346,17 @@ fn page_size_bytes() -> f64 {
 }
 
 pub fn read_psi() -> Option<SystemPsi> {
-    let cpu = parse_psi_file("/proc/pressure/cpu")?;
-    let memory = parse_psi_file("/proc/pressure/memory")?;
-    let io = parse_psi_file("/proc/pressure/io")?;
-    Some(SystemPsi { cpu, memory, io })
+    let cpu = parse_psi_file("/proc/pressure/cpu");
+    let memory = parse_psi_file("/proc/pressure/memory");
+    let io = parse_psi_file("/proc/pressure/io");
+    if cpu.is_none() && memory.is_none() && io.is_none() {
+        return None;
+    }
+    Some(SystemPsi {
+        cpu: cpu.unwrap_or_default(),
+        memory: memory.unwrap_or_default(),
+        io: io.unwrap_or_default(),
+    })
 }
 
 fn parse_psi_file(path: &str) -> Option<PsiMetric> {
@@ -1401,6 +1408,9 @@ pub fn parse_kb(val: &str) -> f64 {
 }
 
 pub fn read_process_detail(pid: u32, fallback_name: &str) -> Option<ProcessDetail> {
+    if !Path::new(&format!("/proc/{pid}")).exists() {
+        return None;
+    }
     let cmdline = fs::read(format!("/proc/{pid}/cmdline"))
         .ok()
         .and_then(|bytes| {
@@ -1845,5 +1855,22 @@ mod tests {
     #[test]
     fn reads_hw_sensors_does_not_panic() {
         let _ = read_hw_sensors();
+    }
+
+    #[test]
+    fn parse_hex_ip_valid_and_invalid() {
+        assert_eq!(parse_hex_ip("0100007F").unwrap(), "127.0.0.1");
+        assert_eq!(parse_hex_ip("00000000").unwrap(), "0.0.0.0");
+        // Too short
+        assert!(parse_hex_ip("0100007").is_err());
+        // Too long
+        assert!(parse_hex_ip("0100007F00").is_err());
+        // Non-ASCII
+        assert!(parse_hex_ip("0100\u{00E9}07F").is_err());
+    }
+
+    #[test]
+    fn read_process_detail_returns_none_for_missing_pid() {
+        assert!(read_process_detail(u32::MAX, "missing_proc").is_none());
     }
 }

@@ -300,6 +300,11 @@ fn parse_args(
         }
     }
 
+    if app_config.samples.is_some() && !app_config.json_once {
+        app_config.json_once = true;
+        app_config.json_lines = true;
+    }
+
     Ok(Some(app_config))
 }
 
@@ -399,4 +404,62 @@ Keys:
   +/-    Change interval",
         env!("CARGO_PKG_VERSION")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_interval_index_supported_values() {
+        assert_eq!(parse_interval_index("500ms").unwrap(), 0);
+        assert_eq!(parse_interval_index("750ms").unwrap(), 1);
+        assert_eq!(parse_interval_index("1s").unwrap(), 2);
+        assert_eq!(parse_interval_index("2s").unwrap(), 3);
+        assert_eq!(parse_interval_index("5s").unwrap(), 4);
+        assert_eq!(parse_interval_index("1000ms").unwrap(), 2);
+    }
+
+    #[test]
+    fn parse_interval_index_unsupported_fails() {
+        assert!(parse_interval_index("100ms").is_err());
+        assert!(parse_interval_index("invalid").is_err());
+        assert!(parse_interval_index("-1s").is_err());
+    }
+
+    #[test]
+    fn parse_theme_name_supported_and_unsupported() {
+        assert_eq!(parse_theme_name("default").unwrap(), "default");
+        assert_eq!(parse_theme_name("high_contrast").unwrap(), "high_contrast");
+        assert_eq!(parse_theme_name("colorblind").unwrap(), "colorblind");
+        assert!(parse_theme_name("unknown_theme").is_err());
+    }
+
+    #[test]
+    fn parse_sample_count_valid_and_invalid() {
+        assert_eq!(parse_sample_count("1").unwrap(), 1);
+        assert_eq!(parse_sample_count("100").unwrap(), 100);
+        assert!(parse_sample_count("0").is_err());
+        assert!(parse_sample_count("-5").is_err());
+        assert!(parse_sample_count("abc").is_err());
+    }
+
+    #[test]
+    fn validate_config_clamps_and_warns() {
+        let bad_config = MonitorConfig {
+            theme: Some(String::from("neon_glow")),
+            default_tab: Some(String::from("settings")),
+            cpu_alert: Some(250.0),
+            mem_alert: Some(-10.0),
+            disk_alert: Some(150),
+            ..Default::default()
+        };
+        let (validated, warnings) = validate_config(bad_config);
+        assert!(validated.theme.is_none());
+        assert!(validated.default_tab.is_none());
+        assert_eq!(validated.cpu_alert, Some(100.0));
+        assert_eq!(validated.mem_alert, Some(1.0));
+        assert_eq!(validated.disk_alert, Some(100));
+        assert_eq!(warnings.len(), 5);
+    }
 }

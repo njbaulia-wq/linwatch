@@ -47,7 +47,6 @@ pub fn run_app<B: Backend>(
         if crossterm::event::poll(timeout)? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => {
-                    was_resizing = false;
                     if app.is_search_mode {
                         match key.code {
                             crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Enter => {
@@ -216,7 +215,9 @@ pub fn run_app<B: Backend>(
             }
         }
 
-        if last_tick.elapsed() >= app.refresh_rate() && !was_resizing {
+        let resizing_now = was_resizing;
+        was_resizing = false;
+        if last_tick.elapsed() >= app.refresh_rate() && !resizing_now {
             app.update();
             last_tick = Instant::now();
         }
@@ -388,6 +389,33 @@ mod tests {
                     "blank render for {:?} at {width}x{height}",
                     tab
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn renders_at_boundary_and_tiny_dimensions() {
+        for (width, height) in [
+            (0, 0),
+            (1, 1),
+            (10, 5),
+            (common::MIN_WIDTH - 1, common::MIN_HEIGHT - 1),
+            (common::MIN_WIDTH, common::MIN_HEIGHT),
+            (250, 100),
+            (500, 250),
+        ] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("test backend");
+            let mut app = AppState::new(AppConfig::default());
+            let mut table_state = ratatui::widgets::TableState::default();
+
+            for tab in ViewTab::all() {
+                app.active_tab = *tab;
+                let res = terminal.draw(|frame| {
+                    app.terminal_width = frame.size().width;
+                    ui(frame, &app, &mut table_state);
+                });
+                assert!(res.is_ok(), "draw failed at {width}x{height}");
             }
         }
     }
