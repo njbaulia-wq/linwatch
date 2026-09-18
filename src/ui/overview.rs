@@ -1,12 +1,10 @@
-use std::collections::VecDeque;
-
 use crate::state::AppState;
 use crate::types::Severity;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Axis, Block, Chart, GraphType, Paragraph, Sparkline, Wrap},
+    widgets::{Axis, Chart, GraphType, Paragraph, Wrap},
     Frame,
 };
 
@@ -29,7 +27,7 @@ fn render_tiny_layout(frame: &mut Frame, area: Rect, app: &AppState) {
         .split(area);
 
     render_kpi_grid_2x2(frame, chunks[0], app);
-    render_diagnostics_and_events(frame, chunks[1], app);
+    render_cpu_chart(frame, chunks[1], app);
 }
 
 // ─── COMPACT layout (width < 100 or height < 25) ─────────────────────────────
@@ -79,7 +77,7 @@ fn render_kpi_row_4(frame: &mut Frame, area: Rect, app: &AppState) {
     render_cpu_card(frame, cols[0], app);
     render_mem_card(frame, cols[1], app);
     render_storage_card(frame, cols[2], app);
-    render_net_gpu_card(frame, cols[3], app);
+    render_network_card(frame, cols[3], app);
 }
 
 fn render_kpi_grid_2x2(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -101,7 +99,7 @@ fn render_kpi_grid_2x2(frame: &mut Frame, area: Rect, app: &AppState) {
     render_cpu_card(frame, top_cols[0], app);
     render_mem_card(frame, top_cols[1], app);
     render_storage_card(frame, bottom_cols[0], app);
-    render_net_gpu_card(frame, bottom_cols[1], app);
+    render_network_card(frame, bottom_cols[1], app);
 }
 
 fn render_cpu_card(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -141,13 +139,16 @@ fn render_cpu_card(frame: &mut Frame, area: Rect, app: &AppState) {
     ]);
     frame.render_widget(Paragraph::new(line1), chunks[0]);
 
-    if chunks[1].height > 0 && app.cpu_history.len() >= 2 {
-        let points = sparkline_points(&app.cpu_history, chunks[1].width as usize);
+    if chunks[1].height > 0 {
+        let load_str = format!(
+            "Load: {} {} {}",
+            app.load_avg[0], app.load_avg[1], app.load_avg[2]
+        );
         frame.render_widget(
-            Sparkline::default()
-                .data(&points)
-                .max(100)
-                .style(Style::default().fg(t.accent_teal)),
+            Paragraph::new(Span::styled(
+                truncate(&load_str, chunks[1].width as usize),
+                Style::default().fg(t.subtext0),
+            )),
             chunks[1],
         );
     }
@@ -191,13 +192,22 @@ fn render_mem_card(frame: &mut Frame, area: Rect, app: &AppState) {
     ]);
     frame.render_widget(Paragraph::new(line1), chunks[0]);
 
-    if chunks[1].height > 0 && app.mem_history.len() >= 2 {
-        let points = sparkline_points(&app.mem_history, chunks[1].width as usize);
+    if chunks[1].height > 0 {
+        let swap_text = if app.swap_total > 0.0 {
+            format!(
+                "Swap: {:.1}/{:.1} GB",
+                app.swap_used / 1024.0,
+                app.swap_total / 1024.0
+            )
+        } else {
+            let avail_gb = (app.mem_total - app.mem_used).max(0.0) / 1024.0;
+            format!("Avail: {:.1} GB", avail_gb)
+        };
         frame.render_widget(
-            Sparkline::default()
-                .data(&points)
-                .max(100)
-                .style(Style::default().fg(t.accent_yellow)),
+            Paragraph::new(Span::styled(
+                truncate(&swap_text, chunks[1].width as usize),
+                Style::default().fg(t.subtext0),
+            )),
             chunks[1],
         );
     }
@@ -236,7 +246,6 @@ fn render_storage_card(frame: &mut Frame, area: Rect, app: &AppState) {
     ]);
     frame.render_widget(Paragraph::new(line1), chunks[0]);
 
-    // Show active disk I/O rates
     let total_read: f64 = app.disk_io.iter().map(|d| d.read_bps).sum();
     let total_write: f64 = app.disk_io.iter().map(|d| d.write_bps).sum();
     let io_text = if total_read > 0.0 || total_write > 0.0 {
@@ -257,9 +266,9 @@ fn render_storage_card(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 }
 
-fn render_net_gpu_card(frame: &mut Frame, area: Rect, app: &AppState) {
+fn render_network_card(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
-    let block = panel_block(" Network & GPU ");
+    let block = panel_block(" Network ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -294,41 +303,22 @@ fn render_net_gpu_card(frame: &mut Frame, area: Rect, app: &AppState) {
     ]);
     frame.render_widget(Paragraph::new(net_line), chunks[0]);
 
-    // GPU line or connection stats
-    let gpu_text = if let Some(gpu) = app.primary_gpu() {
-        let usage = gpu
-            .usage_pct
-            .map(|u| format!("{u:.0}%"))
-            .unwrap_or_else(|| String::from("N/A"));
-        let temp = gpu
-            .temp_c
-            .map(|c| format!("{c:.0}\u{b0}C"))
-            .unwrap_or_default();
-        format!("GPU {} {} {}", gpu.kind, usage, temp)
-    } else {
-        format!("Ports: {} listening", app.open_ports.len())
-    };
+    let net_sub = format!(
+        "Ports: {} open · Links: {}",
+        app.open_ports.len(),
+        app.interfaces.len()
+    );
     frame.render_widget(
         Paragraph::new(Span::styled(
-            truncate(&gpu_text, chunks[1].width as usize),
+            truncate(&net_sub, chunks[1].width as usize),
             Style::default().fg(t.subtext0),
         )),
         chunks[1],
     );
 }
 
-fn sparkline_points(history: &VecDeque<(f64, f64)>, width: usize) -> Vec<u64> {
-    history
-        .iter()
-        .rev()
-        .take(width)
-        .rev()
-        .map(|(_, v)| v.max(0.0).round() as u64)
-        .collect()
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// BODY — Middle trends and bottom intelligence
+// BODY — Focused CPU & GPU running charts and intelligence
 // ═══════════════════════════════════════════════════════════════════════════════
 
 fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -337,110 +327,264 @@ fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
         return;
     }
 
-    // Two vertical sections: Top is Trends + Top Consumers; Bottom is Diagnostics + Events
+    // Two vertical sections: Top is CPU & GPU running charts; Bottom is Consumers & Diagnostics
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(area);
-
-    render_activity_section(frame, rows[0], app);
-    render_diagnostics_and_events(frame, rows[1], app);
-}
-
-fn render_activity_section(frame: &mut Frame, area: Rect, app: &AppState) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
 
-    render_trend_charts(frame, cols[0], app);
-    render_top_consumer_list(frame, cols[1], app);
+    render_cpu_gpu_charts_row(frame, rows[0], app);
+    render_intelligence_row(frame, rows[1], app);
 }
 
-fn render_trend_charts(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    let block = panel_block(" Real-time Activity Trends (120s) ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 4 || inner.width < 10 {
-        return;
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
+fn render_cpu_gpu_charts_row(frame: &mut Frame, area: Rect, app: &AppState) {
+    let cols = Layout::default()
+        .direction(if area.width < 90 {
+            Direction::Vertical
+        } else {
+            Direction::Horizontal
+        })
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(inner);
+        .split(area);
 
-    let cpu_peak = app.cpu_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
-    let cpu_title = format!("CPU · {:.1}% (Peak {:.0}%)", app.cpu_usage, cpu_peak);
-    render_braille_chart(
-        frame,
-        chunks[0],
-        &cpu_title,
-        &app.cpu_history,
-        t.accent_teal,
-    );
-
-    let mem_peak = app.mem_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
-    let mem_title = format!("Memory · {:.1}% (Peak {:.0}%)", app.mem_pct(), mem_peak);
-    render_braille_chart(
-        frame,
-        chunks[1],
-        &mem_title,
-        &app.mem_history,
-        t.accent_yellow,
-    );
+    render_cpu_chart(frame, cols[0], app);
+    render_gpu_chart(frame, cols[1], app);
 }
 
-fn render_braille_chart(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    data: &VecDeque<(f64, f64)>,
-    color: ratatui::style::Color,
-) {
+fn render_intelligence_row(frame: &mut Frame, area: Rect, app: &AppState) {
+    let cols = Layout::default()
+        .direction(if area.width < 90 {
+            Direction::Vertical
+        } else {
+            Direction::Horizontal
+        })
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    render_top_consumer_list(frame, cols[0], app);
+    render_diagnostics_and_events(frame, cols[1], app);
+}
+
+fn render_cpu_chart(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
     if area.height < 3 || area.width < 10 {
         return;
     }
 
-    let title_line = Line::from(vec![
-        Span::styled(" ", Style::default()),
-        Span::styled(
-            title,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    let (cpu_peak, cpu_avg) = if app.cpu_history.is_empty() {
+        (app.cpu_usage, app.cpu_usage)
+    } else {
+        let sum: f64 = app.cpu_history.iter().map(|(_, v)| *v).sum();
+        let count = app.cpu_history.len() as f64;
+        let peak = app.cpu_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+        (peak, sum / count)
+    };
 
-    if data.is_empty() {
+    let title = format!(
+        " CPU Utilization · {:.1}% (Peak {:.0}% · Avg {:.0}%) ",
+        app.cpu_usage, cpu_peak, cpu_avg
+    );
+
+    if app.cpu_history.is_empty() {
         frame.render_widget(
-            Paragraph::new("Collecting telemetries...").style(Style::default().fg(t.overlay1)),
+            Paragraph::new("Collecting CPU telemetry...")
+                .style(Style::default().fg(t.overlay1))
+                .block(panel_block(&title)),
             area,
         );
         return;
     }
 
-    let points: Vec<(f64, f64)> = data.iter().copied().collect();
+    let points: Vec<(f64, f64)> = app.cpu_history.iter().copied().collect();
+    let x_start = app.cpu_history.front().map(|p| p.0).unwrap_or(0.0);
+    let x_end = app
+        .cpu_history
+        .back()
+        .map(|p| p.0)
+        .unwrap_or(1.0)
+        .max(x_start + 1.0);
+
     let dataset = ratatui::widgets::Dataset::default()
         .marker(ratatui::symbols::Marker::Braille)
         .graph_type(GraphType::Line)
-        .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(t.accent_teal)
+                .add_modifier(Modifier::BOLD),
+        )
         .data(&points);
 
     let chart = Chart::new(vec![dataset])
-        .block(Block::default().title(title_line))
+        .block(panel_block(&title))
+        .x_axis(
+            Axis::default()
+                .bounds([x_start, x_end])
+                .labels(vec![
+                    Span::styled("-120s", Style::default().fg(t.overlay1)),
+                    Span::styled("-60s", Style::default().fg(t.overlay1)),
+                    Span::styled("now", Style::default().fg(t.accent_teal)),
+                ])
+                .style(Style::default().fg(t.overlay1)),
+        )
         .y_axis(
             Axis::default()
                 .bounds([0.0, 100.0])
                 .labels(vec![
-                    Span::styled("0", Style::default().fg(t.overlay1)),
-                    Span::styled("50", Style::default().fg(t.overlay1)),
-                    Span::styled("100", Style::default().fg(t.overlay1)),
+                    Span::styled("0%", Style::default().fg(t.overlay1)),
+                    Span::styled("50%", Style::default().fg(t.overlay1)),
+                    Span::styled("100%", Style::default().fg(t.overlay1)),
                 ])
                 .style(Style::default().fg(t.overlay1)),
         );
+
     frame.render_widget(chart, area);
+}
+
+fn render_gpu_chart(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    if area.height < 3 || area.width < 10 {
+        return;
+    }
+
+    let primary_gpu = app.primary_gpu();
+    let (title, usage_val, peak_val) = if let Some(gpu) = primary_gpu {
+        let usage = gpu.usage_pct.unwrap_or(0.0);
+        let peak = app
+            .gpu_usage_history
+            .iter()
+            .map(|(_, v)| *v)
+            .fold(usage, f64::max);
+        let temp_str = gpu
+            .temp_c
+            .map(|c| format!(" · {:.0}\u{b0}C", c))
+            .unwrap_or_default();
+        let name = truncate(&gpu.model, 20);
+        let title = if gpu.usage_pct.is_some() {
+            format!(
+                " GPU Activity · {:.0}% (Peak {:.0}%{}) · {} ",
+                usage, peak, temp_str, name
+            )
+        } else {
+            format!(" GPU · {} {}", gpu.kind, name)
+        };
+        (title, gpu.usage_pct, peak)
+    } else {
+        (String::from(" GPU Activity · Not Detected "), None, 0.0)
+    };
+
+    if let Some(_gpu) = primary_gpu {
+        if app.gpu_usage_history.len() >= 2 {
+            let points: Vec<(f64, f64)> = app.gpu_usage_history.iter().copied().collect();
+            let x_start = app.gpu_usage_history.front().map(|p| p.0).unwrap_or(0.0);
+            let x_end = app
+                .gpu_usage_history
+                .back()
+                .map(|p| p.0)
+                .unwrap_or(1.0)
+                .max(x_start + 1.0);
+            let max_y = peak_val.max(100.0);
+
+            let dataset = ratatui::widgets::Dataset::default()
+                .marker(ratatui::symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(
+                    Style::default()
+                        .fg(t.accent_purple)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .data(&points);
+
+            let chart = Chart::new(vec![dataset])
+                .block(panel_block(&title))
+                .x_axis(
+                    Axis::default()
+                        .bounds([x_start, x_end])
+                        .labels(vec![
+                            Span::styled("-120s", Style::default().fg(t.overlay1)),
+                            Span::styled("-60s", Style::default().fg(t.overlay1)),
+                            Span::styled("now", Style::default().fg(t.accent_purple)),
+                        ])
+                        .style(Style::default().fg(t.overlay1)),
+                )
+                .y_axis(
+                    Axis::default()
+                        .bounds([0.0, max_y])
+                        .labels(vec![
+                            Span::styled("0%", Style::default().fg(t.overlay1)),
+                            Span::styled("50%", Style::default().fg(t.overlay1)),
+                            Span::styled("100%", Style::default().fg(t.overlay1)),
+                        ])
+                        .style(Style::default().fg(t.overlay1)),
+                );
+
+            frame.render_widget(chart, area);
+            return;
+        }
+
+        // GPU present, but telemetry history not available or still collecting
+        let block = panel_block(&title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let mut lines = Vec::new();
+        if let Some(gpu) = primary_gpu {
+            lines.push(Line::from(vec![
+                Span::styled("Device: ", Style::default().fg(t.overlay1)),
+                Span::styled(
+                    format!("{} {}", gpu.vendor, gpu.model),
+                    Style::default().fg(t.text).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Driver: ", Style::default().fg(t.overlay1)),
+                Span::styled(gpu.driver.clone(), Style::default().fg(t.text)),
+                Span::styled(" · Slot: ", Style::default().fg(t.overlay1)),
+                Span::styled(gpu.pci_slot.clone(), Style::default().fg(t.text)),
+            ]));
+            if let Some(temp) = gpu.temp_c {
+                lines.push(Line::from(vec![
+                    Span::styled("Temperature: ", Style::default().fg(t.overlay1)),
+                    Span::styled(
+                        format!("{:.0}\u{b0}C", temp),
+                        Style::default().fg(t.accent_orange),
+                    ),
+                ]));
+            }
+            if usage_val.is_some() {
+                lines.push(Line::from(Span::styled(
+                    "Collecting live usage telemetry...",
+                    Style::default().fg(t.accent_teal),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "Load sensor not exposed by current DRM driver",
+                    Style::default().fg(t.overlay1),
+                )));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+    } else {
+        // No GPU detected
+        let block = panel_block(&title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let lines = vec![
+            Line::from(Span::styled(
+                "No hardware GPU / DRM device detected",
+                Style::default().fg(t.subtext0),
+            )),
+            Line::from(Span::styled(
+                "Virtual machine, container, or headless server environment.",
+                Style::default().fg(t.overlay1),
+            )),
+            Line::from(Span::styled(
+                "Graphics acceleration is not active or not bound to /dev/dri.",
+                Style::default().fg(t.overlay1),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
 }
 
 fn render_top_consumer_list(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -788,5 +932,42 @@ mod tests {
                 "blank render at {w}x{h}"
             );
         }
+    }
+
+    #[test]
+    fn overview_renders_with_gpu_history() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = make_app();
+        app.gpus = vec![crate::types::GpuInfo {
+            card: "card0".into(),
+            vendor: "NVIDIA".into(),
+            model: "GeForce RTX 4090".into(),
+            driver: "nvidia".into(),
+            kind: "dGPU".into(),
+            pci_slot: "0000:01:00.0".into(),
+            temp_c: Some(58.0),
+            usage_pct: Some(42.0),
+            power_w: Some(250.0),
+            frequency_mhz: Some(2500),
+            max_frequency_mhz: Some(2600),
+            rc6_residency_ms: None,
+            memory_used_mb: Some(8192.0),
+            memory_total_mb: Some(24576.0),
+            power_state: "active".into(),
+            sensor_source: "nvidia-smi".into(),
+        }];
+        app.gpu_usage_history = VecDeque::from([(0.0, 30.0), (1.0, 42.0), (2.0, 38.0)]);
+        terminal
+            .draw(|frame| {
+                overview(frame, frame.size(), &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buf.content.iter().any(|c| c.symbol() != " "),
+            "blank render with GPU history"
+        );
     }
 }
