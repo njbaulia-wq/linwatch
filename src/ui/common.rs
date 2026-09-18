@@ -29,8 +29,7 @@ pub fn panel_block_severity(title: impl Into<String>, severity: Severity) -> Blo
         .style(Style::default().bg(t.bg_panel))
 }
 
-/// Borderless group container. Prefer this for metric groups so ink goes to
-/// data, not chrome; reserve `panel_block` for verdict/alerts/focus panels.
+#[allow(dead_code)]
 pub fn flat_panel(title: impl Into<String>) -> Block<'static> {
     let t = theme::get();
     Block::default()
@@ -50,16 +49,19 @@ pub fn dim(text: impl Into<String>) -> Span<'static> {
 }
 
 /// One-decimal percent for body values: `45.2%`.
+#[allow(dead_code)]
 pub fn fmt_pct1(value: f64) -> String {
     format!("{value:.1}%")
 }
 
 /// Whole percent for tiny gauges: `45%`.
+#[allow(dead_code)]
 pub fn fmt_pct0(value: f64) -> String {
     format!("{value:.0}%")
 }
 
 /// Temperature or honest N/A — never a fake `0.0°`.
+#[allow(dead_code)]
 pub fn fmt_temp(temp: Option<f64>) -> String {
     temp.map(|v| format!("{v:.0}\u{b0}"))
         .unwrap_or_else(|| String::from("N/A"))
@@ -76,6 +78,7 @@ pub fn severity_chip(severity: Severity) -> Span<'static> {
     )
 }
 
+#[allow(dead_code)]
 pub fn severity_word(severity: Severity) -> &'static str {
     match severity {
         Severity::Ok => "OK",

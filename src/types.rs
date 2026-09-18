@@ -182,6 +182,7 @@ impl EnvKind {
     }
 
     /// Whether uptime/load/net counters describe the host, not us.
+    #[allow(dead_code)]
     pub fn is_host_scoped(&self) -> bool {
         matches!(self, EnvKind::Container | EnvKind::Wsl)
     }
@@ -211,6 +212,7 @@ impl ViewTab {
         }
     }
 
+    #[allow(dead_code)]
     pub fn icon(&self) -> &'static str {
         match self {
             ViewTab::Overview => "\u{25a0}",

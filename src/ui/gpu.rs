@@ -17,7 +17,7 @@ pub fn gpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
     if app.gpus.is_empty() {
         frame.render_widget(
             Paragraph::new("No GPU found in /sys/class/drm")
-                .block(panel_block("\u{25a6} GPU / iGPU"))
+                .block(panel_block(" GPU / iGPU "))
                 .alignment(Alignment::Center),
             area,
         );
@@ -66,7 +66,7 @@ fn render_gpu_summary(frame: &mut Frame, area: Rect, app: &AppState) {
         let clock_text = clock_text(gpu);
         let lines = vec![
             Line::from(vec![
-                styled("\u{25a6} Primary: ", t.overlay1),
+                styled("Primary: ", t.overlay1),
                 Span::styled(
                     format!("{} {}", gpu.kind, truncate(&gpu.model, 42)),
                     Style::default().fg(t.text).add_modifier(Modifier::BOLD),
@@ -97,7 +97,7 @@ fn render_gpu_summary(frame: &mut Frame, area: Rect, app: &AppState) {
             ]),
         ];
         frame.render_widget(
-            Paragraph::new(lines).block(panel_block("\u{25a6} GPU Overview")),
+            Paragraph::new(lines).block(panel_block(" GPU Overview ")),
             area,
         );
         return;
@@ -127,7 +127,7 @@ fn render_gpu_summary(frame: &mut Frame, area: Rect, app: &AppState) {
 
     let details = vec![
         Line::from(vec![
-            styled("\u{25a6} Primary: ", t.overlay1),
+            styled("Primary: ", t.overlay1),
             Span::styled(
                 format!("{} {}", gpu.kind, truncate(&gpu.model, 44)),
                 Style::default().fg(t.text).add_modifier(Modifier::BOLD),
@@ -153,7 +153,7 @@ fn render_gpu_summary(frame: &mut Frame, area: Rect, app: &AppState) {
         ]),
     ];
     frame.render_widget(
-        Paragraph::new(details).block(panel_block("\u{25a6} GPU Overview")),
+        Paragraph::new(details).block(panel_block(" GPU Overview ")),
         columns[0],
     );
 
@@ -262,7 +262,7 @@ fn render_gpu_table(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(header_col("Temp")),
                 Cell::from(header_col("Sensor")),
             ]))
-            .block(panel_block("\u{25a6} Detected GPU Devices"))
+            .block(panel_block(" Detected Graphics Devices "))
             .column_spacing(1),
             area,
         );
@@ -342,7 +342,7 @@ fn render_gpu_table(frame: &mut Frame, area: Rect, app: &AppState) {
             Cell::from(header_col("Memory")),
             Cell::from(header_col("Sensor")),
         ]))
-        .block(panel_block("\u{25a6} Detected GPU Devices"))
+        .block(panel_block(" Detected Graphics Devices "))
         .column_spacing(1),
         area,
     );

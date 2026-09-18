@@ -3,10 +3,10 @@ use std::collections::VecDeque;
 use crate::state::AppState;
 use crate::types::Severity;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Axis, Block, Chart, GraphType, LineGauge, Paragraph, Sparkline, Wrap},
+    widgets::{Axis, Block, Chart, GraphType, Paragraph, Sparkline, Wrap},
     Frame,
 };
 
@@ -16,8 +16,7 @@ use super::theme;
 pub fn overview(frame: &mut Frame, area: Rect, app: &AppState) {
     match breakpoint_for_area(area) {
         Breakpoint::Tiny => render_tiny_layout(frame, area, app),
-        Breakpoint::Compact => render_small_layout(frame, area, app),
-        // Wide reuses the full layout with rebalanced columns (see render_body).
+        Breakpoint::Compact => render_compact_layout(frame, area, app),
         Breakpoint::Full | Breakpoint::Wide => render_full_layout(frame, area, app),
     }
 }
@@ -26,729 +25,93 @@ pub fn overview(frame: &mut Frame, area: Rect, app: &AppState) {
 fn render_tiny_layout(frame: &mut Frame, area: Rect, app: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(4),
-            Constraint::Min(4),
-        ])
+        .constraints([Constraint::Length(4), Constraint::Min(6)])
         .split(area);
 
-    render_health_bar_inline(frame, chunks[0], app);
-    render_kpi_compact_row(frame, chunks[1], app);
-    render_alerts_inline(frame, chunks[2], app);
+    render_kpi_grid_2x2(frame, chunks[0], app);
+    render_diagnostics_and_events(frame, chunks[1], app);
 }
 
-// ─── SMALL layout (width < 100 or height < 25) ───────────────────────────────
-fn render_small_layout(frame: &mut Frame, area: Rect, app: &AppState) {
+// ─── COMPACT layout (width < 100 or height < 25) ─────────────────────────────
+fn render_compact_layout(frame: &mut Frame, area: Rect, app: &AppState) {
+    let top_height = if area.width < 100 { 8 } else { 5 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(6),
-            Constraint::Length(5),
-            Constraint::Min(4),
-        ])
+        .constraints([Constraint::Length(top_height), Constraint::Min(8)])
         .split(area);
 
-    render_health_bar_inline(frame, chunks[0], app);
-    render_kpi_compact_row(frame, chunks[1], app);
-    render_pressure_row(frame, chunks[2], app);
-    render_alerts_inline(frame, chunks[3], app);
+    if area.width < 100 {
+        render_kpi_grid_2x2(frame, chunks[0], app);
+    } else {
+        render_kpi_row_4(frame, chunks[0], app);
+    }
+
+    render_body(frame, chunks[1], app);
 }
 
-// ─── FULL layout (large terminal) ────────────────────────────────────────────
+// ─── FULL layout (width >= 100 and height >= 25) ────────────────────────────
 fn render_full_layout(frame: &mut Frame, area: Rect, app: &AppState) {
-    let focus_height = if area.height >= 36 { 12 } else { 9 };
+    let kpi_height = if area.height >= 34 { 6 } else { 5 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(focus_height),
-            Constraint::Min(8),
-        ])
+        .constraints([Constraint::Length(kpi_height), Constraint::Min(12)])
         .split(area);
 
-    render_health_bar_inline(frame, chunks[0], app);
-    render_kpi_row(frame, chunks[1], app);
-    render_body(frame, chunks[2], app);
+    render_kpi_row_4(frame, chunks[0], app);
+    render_body(frame, chunks[1], app);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VERDICT BAR — one glanceable answer: health + primary cause.
-// Temp/battery/net/uptime live in header/footer; repeating them here was
-// redundant ink.
+// KPI CARDS — Non-overlapping, rich core metric indicators
 // ═══════════════════════════════════════════════════════════════════════════════
-fn render_health_bar_inline(frame: &mut Frame, area: Rect, app: &AppState) {
-    let sev = Severity::from_health(app.health_score as f64);
 
-    if area.width < 50 {
-        let block = panel_block_severity("", sev);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        let gauge = LineGauge::default()
-            .gauge_style(
-                Style::default()
-                    .fg(severity_color(sev))
-                    .add_modifier(Modifier::BOLD),
-            )
-            .ratio(visual_ratio(app.health_score as f64, inner.width))
-            .label(Line::from(vec![
-                severity_chip(sev),
-                Span::styled(
-                    format!(" {}", app.health_score),
-                    Style::default()
-                        .fg(severity_color(sev))
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-        frame.render_widget(gauge, inner);
-        return;
-    }
-
-    let left_width = 24u16.min(area.width / 3);
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(left_width), Constraint::Min(20)])
-        .split(area);
-
-    let health_word = match sev {
-        Severity::Ok => "Healthy",
-        Severity::Warn => "Attention",
-        Severity::Critical => "Critical",
-        Severity::Neutral => "Monitoring",
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            severity_chip(sev),
-            Span::styled(
-                format!(" {} {health_word}", app.health_score),
-                Style::default()
-                    .fg(severity_color(sev))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ])),
-        chunks[0],
-    );
-
-    let cause_line = match app.root_causes.first() {
-        Some(cause) if cause.severity != Severity::Ok => Line::from(vec![
-            severity_chip(cause.severity),
-            Span::styled(
-                format!(" {} ", truncate(&cause.title, 16)),
-                Style::default()
-                    .fg(severity_color(cause.severity))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                truncate(&cause.detail, chunks[1].width as usize),
-                Style::default().fg(theme::get().subtext1),
-            ),
-        ]),
-        _ => Line::from(Span::styled(
-            "All thresholds nominal",
-            Style::default().fg(theme::get().subtext1),
-        )),
-    };
-    frame.render_widget(Paragraph::new(cause_line), chunks[1]);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// KPI ROW — 4 borderless stat blocks: label, honest value, sparkline.
-// Severity rides on the value color (+chip), never on decoration.
-// ═══════════════════════════════════════════════════════════════════════════════
-fn render_kpi_row(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(32),
-            Constraint::Percentage(32),
-            Constraint::Percentage(18),
-            Constraint::Percentage(18),
-        ])
-        .split(area);
-
-    let gpu = app.primary_gpu();
-    let gpu_history = if gpu.is_some() && app.gpu_usage_history.len() >= 2 {
-        Some(&app.gpu_usage_history)
-    } else {
-        None
-    };
-    render_kpi_stat(
-        frame,
-        chunks[0],
-        "CPU",
-        &format!(
-            "{} ×{}",
-            truncate(&app.system.cpu_model, 20),
-            app.system.cpu_count
-        ),
-        Some(app.cpu_usage),
-        Some(&app.cpu_history),
-        t.accent_teal,
-    );
-    render_kpi_stat(
-        frame,
-        chunks[1],
-        "GPU",
-        &gpu.map(|g| truncate(&g.model, 20))
-            .unwrap_or_else(|| String::from("None")),
-        gpu.and_then(|g| g.usage_pct),
-        gpu_history,
-        t.accent_purple,
-    );
-    render_kpi_stat(
-        frame,
-        chunks[2],
-        "MEM",
-        &format_memory_detail(app.mem_used, app.mem_total),
-        Some(app.mem_pct()),
-        Some(&app.mem_history),
-        t.accent_yellow,
-    );
-    render_kpi_stat(
-        frame,
-        chunks[3],
-        "DSK",
-        &format!("{:.0}/{:.0}GB", app.disk.used_gb, app.disk.total_gb),
-        Some(app.disk.pct as f64),
-        None,
-        t.accent_green,
-    );
-}
-
-fn render_kpi_stat(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    subtitle: &str,
-    value: Option<f64>,
-    history: Option<&VecDeque<(f64, f64)>>,
-    color: ratatui::style::Color,
-) {
-    let block = flat_panel("");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 2 || inner.width < 10 {
-        // Ultra-compact: single honest line.
-        let line = match value {
-            Some(v) => format!("{label} {}", fmt_pct0(v)),
-            None => format!("{label} N/A"),
-        };
-        frame.render_widget(Paragraph::new(dim(line)), inner);
-        return;
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .split(inner);
-
-    // Subtitle only when it fits whole — a cut unit (`GiB` → `G…`)
-    // reads as a different number. Otherwise the bare label wins.
-    let subtitle_line = format!("{label} · {subtitle}");
-    let label_line = if subtitle_line.chars().count() <= inner.width as usize {
-        subtitle_line
-    } else {
-        label.to_string()
-    };
-    frame.render_widget(Paragraph::new(dim(label_line)), chunks[0]);
-
-    match value {
-        Some(v) => {
-            let sev = Severity::from_usage(v);
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    severity_chip(sev),
-                    Span::styled(
-                        format!(" {}", fmt_pct1(v)),
-                        Style::default()
-                            .fg(severity_color(sev))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ])),
-                chunks[1],
-            );
-        }
-        None => {
-            frame.render_widget(Paragraph::new(dim("○ N/A")), chunks[1]);
-        }
-    }
-
-    let points: Vec<u64> = history
-        .map(|h| {
-            h.iter()
-                .rev()
-                .take(inner.width as usize)
-                .rev()
-                .map(|(_, v)| v.max(0.0).round() as u64)
-                .collect()
-        })
-        .unwrap_or_default();
-    if points.len() >= 2 {
-        frame.render_widget(
-            Sparkline::default()
-                .data(&points)
-                .max(100)
-                .style(Style::default().fg(color)),
-            chunks[2],
-        );
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// KPI COMPACT ROW — for tiny/small layouts
-// ═══════════════════════════════════════════════════════════════════════════════
-fn render_kpi_compact_row(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    let gpu = app.primary_gpu();
-    let items = [
-        (
-            "CPU",
-            truncate(&app.system.cpu_model, 14),
-            Some(app.cpu_usage),
-            Some(&app.cpu_history),
-            t.accent_teal,
-        ),
-        (
-            "GPU",
-            gpu.map(|g| truncate(&g.model, 12))
-                .unwrap_or_else(|| String::from("None")),
-            gpu.and_then(|g| g.usage_pct),
-            None,
-            t.accent_purple,
-        ),
-        (
-            "MEM",
-            format!(
-                "{:.1}/{:.1}GiB",
-                app.mem_used / 1024.0,
-                app.mem_total / 1024.0
-            ),
-            Some(app.mem_pct()),
-            Some(&app.mem_history),
-            t.accent_yellow,
-        ),
-        (
-            "DSK",
-            format!("{:.0}/{:.0}GB", app.disk.used_gb, app.disk.total_gb),
-            Some(app.disk.pct as f64),
-            None,
-            t.accent_green,
-        ),
-    ];
-
-    // Below ~48 cols four stats side-by-side are unreadable: use a 2x2 grid.
-    if area.width < 48 && area.height >= 7 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-        for (row, pair) in [(rows[0], [0, 1]), (rows[1], [2, 3])].iter() {
-            let pair_cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(*row);
-            for (slot, item_idx) in pair.iter().enumerate() {
-                let (label, subtitle, value, history, color) = &items[*item_idx];
-                render_kpi_stat(
-                    frame,
-                    pair_cols[slot],
-                    label,
-                    subtitle,
-                    *value,
-                    *history,
-                    *color,
-                );
-            }
-        }
-        return;
-    }
-
+fn render_kpi_row_4(frame: &mut Frame, area: Rect, app: &AppState) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(34),
-            Constraint::Percentage(34),
-            Constraint::Percentage(16),
-            Constraint::Percentage(16),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
         ])
         .split(area);
-    for (i, (label, subtitle, value, history, color)) in items.iter().enumerate() {
-        render_kpi_stat(frame, cols[i], label, subtitle, *value, *history, *color);
-    }
+
+    render_cpu_card(frame, cols[0], app);
+    render_mem_card(frame, cols[1], app);
+    render_storage_card(frame, cols[2], app);
+    render_net_gpu_card(frame, cols[3], app);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// PRESSURE ROW — horizontal gauges for small layout
-// ═══════════════════════════════════════════════════════════════════════════════
-fn render_pressure_row(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    let block = panel_block(" Pressure ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 3 {
-        return;
-    }
-
+fn render_kpi_grid_2x2(frame: &mut Frame, area: Rect, app: &AppState) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    render_mini_gauge(frame, rows[0], "CPU ", app.cpu_usage, t.accent_teal);
-    render_detail_gauge(
-        frame,
-        rows[1],
-        "MEM ",
-        app.mem_pct(),
-        &format_memory_detail(app.mem_used, app.mem_total),
-        t.accent_yellow,
-    );
-    render_mini_gauge(frame, rows[2], "SWAP", app.swap_pct(), t.accent_purple);
-}
-
-fn render_mini_gauge(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    value: f64,
-    color: ratatui::style::Color,
-) {
-    let t = theme::get();
-    let sev = Severity::from_usage(value);
-
-    // Narrow columns drop the trailing state word; value + bar suffice.
-    let wide = area.width >= 34;
-    let mut constraints = vec![
-        Constraint::Length(5),
-        Constraint::Length(6),
-        Constraint::Min(6),
-    ];
-    if wide {
-        constraints.push(Constraint::Length(5));
-    }
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(constraints)
-        .split(area);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            label,
-            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
-        )),
-        cols[0],
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!("{value:>5.1}%"),
-            Style::default()
-                .fg(severity_color(sev))
-                .add_modifier(Modifier::BOLD),
-        )),
-        cols[1],
-    );
-
-    let gauge = LineGauge::default()
-        .gauge_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-        .ratio(visual_ratio(value, cols[2].width))
-        .label(Span::raw(""));
-    frame.render_widget(gauge, cols[2]);
-
-    if wide {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                severity_word(sev),
-                Style::default().fg(severity_color(sev)),
-            ))
-            .alignment(Alignment::Right),
-            cols[3],
-        );
-    }
-}
-
-fn render_detail_gauge(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    value: f64,
-    detail: &str,
-    color: ratatui::style::Color,
-) {
-    let t = theme::get();
-    let sev = Severity::from_usage(value);
-    let detail_width = (area.width / 2).clamp(10, 22);
-
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Min(6),
-            Constraint::Length(detail_width),
-        ])
-        .split(area);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            label,
-            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
-        )),
-        cols[0],
-    );
-
-    let gauge = LineGauge::default()
-        .gauge_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-        .ratio(visual_ratio(value, cols[1].width))
-        .label(Span::styled(
-            format!("{value:.1}%"),
-            Style::default()
-                .fg(severity_color(sev))
-                .add_modifier(Modifier::BOLD),
-        ));
-    frame.render_widget(gauge, cols[1]);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            truncate(detail, detail_width as usize),
-            Style::default().fg(t.overlay1),
-        ))
-        .alignment(Alignment::Right),
-        cols[2],
-    );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BODY — one bordered frame per column, borderless content inside.
-// Trends | Resources | Status (+ Top CPU on wide screens).
-// ═══════════════════════════════════════════════════════════════════════════════
-fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
-    if area.height < 10 {
-        render_status_column(frame, area, app);
-        return;
-    }
-
-    // Wide (≥160): four balanced columns, gauge process bars fit the fourth.
-    if area.width >= 160 {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(46),
-                Constraint::Percentage(20),
-                Constraint::Percentage(17),
-                Constraint::Percentage(17),
-            ])
-            .split(area);
-
-        render_trends_column(frame, chunks[0], app);
-        render_resources_column(frame, chunks[1], app);
-        render_status_column(frame, chunks[2], app);
-        let top_block = panel_block(" Top CPU ");
-        let top_inner = top_block.inner(chunks[3]);
-        frame.render_widget(top_block, chunks[3]);
-        render_process_bars(frame, top_inner, app);
-        return;
-    }
-
-    if area.width < 120 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(area);
-        let bottom = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(rows[1]);
-
-        render_trends_column(frame, rows[0], app);
-        render_resources_column(frame, bottom[0], app);
-        render_status_column(frame, bottom[1], app);
-        return;
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(56),
-            Constraint::Percentage(22),
-            Constraint::Percentage(22),
-        ])
-        .split(area);
-
-    render_trends_column(frame, chunks[0], app);
-    render_resources_column(frame, chunks[1], app);
-    render_status_column(frame, chunks[2], app);
-}
-
-fn render_trends_column(frame: &mut Frame, area: Rect, app: &AppState) {
-    let block = panel_block(" Trends ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    render_charts(frame, inner, app);
-}
-
-fn render_resources_column(frame: &mut Frame, area: Rect, app: &AppState) {
-    let block = panel_block(" Resources ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    render_resource_bars(frame, inner, app);
-}
-
-fn render_status_column(frame: &mut Frame, area: Rect, app: &AppState) {
-    let block = panel_block_severity(" Status ", alerts_severity(app));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    render_alerts_visual(frame, inner, app);
-}
-
-fn alerts_severity(app: &AppState) -> Severity {
-    if app.alerts.iter().any(|a| a.starts_with('\u{26a1}')) {
-        Severity::Critical
-    } else if app.alerts.iter().any(|a| a.starts_with('\u{26a0}')) {
-        Severity::Warn
-    } else {
-        Severity::from_health(app.health_score as f64)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CHARTS — CPU + MEM trends. GPU history lives on the GPU tab; duplicating it
-// here next to the GPU KPI sparkline was redundant ink.
-// ═══════════════════════════════════════════════════════════════════════════════
-fn render_charts(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    let horizontal = area.width >= 96 && area.height < 16;
-    let chunks = Layout::default()
-        .direction(if horizontal {
-            Direction::Horizontal
-        } else {
-            Direction::Vertical
-        })
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    let cpu_avg = moving_average(&app.cpu_history, 5);
-    let cpu_peak = app.cpu_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
-    let cpu_title = format!(
-        "CPU · {} (AVG {:.0}, PEAK {:.0})",
-        fmt_pct1(app.cpu_usage),
-        cpu_avg,
-        cpu_peak
-    );
-    render_chart(
-        frame,
-        chunks[0],
-        &cpu_title,
-        &app.cpu_history,
-        t.accent_teal,
-    );
+    let top_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[0]);
 
-    let mem_avg = moving_average(&app.mem_history, 5);
-    let mem_peak = app.mem_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
-    let mem_title = format!(
-        "MEM · {} (AVG {:.0}, PEAK {:.0})",
-        fmt_pct1(app.mem_pct()),
-        mem_avg,
-        mem_peak
-    );
-    render_chart(
-        frame,
-        chunks[1],
-        &mem_title,
-        &app.mem_history,
-        t.accent_yellow,
-    );
+    let bottom_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+
+    render_cpu_card(frame, top_cols[0], app);
+    render_mem_card(frame, top_cols[1], app);
+    render_storage_card(frame, bottom_cols[0], app);
+    render_net_gpu_card(frame, bottom_cols[1], app);
 }
 
-fn moving_average(data: &VecDeque<(f64, f64)>, window: usize) -> f64 {
-    if data.is_empty() {
-        return 0.0;
-    }
-    let vals: Vec<f64> = data.iter().rev().take(window).map(|(_, v)| *v).collect();
-    vals.iter().sum::<f64>() / vals.len() as f64
-}
-
-fn render_chart(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    data: &VecDeque<(f64, f64)>,
-    color: ratatui::style::Color,
-) {
+fn render_cpu_card(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
-    if area.height < 8 || area.width < 52 {
-        render_compact_wave_chart(frame, area, title, data, color);
-        return;
-    }
-
-    if data.is_empty() {
-        frame.render_widget(
-            Paragraph::new("Collecting...")
-                .block(chart_block(title, color))
-                .alignment(Alignment::Center),
-            area,
-        );
-        return;
-    }
-
-    let points: Vec<(f64, f64)> = data.iter().copied().collect();
-
-    let line_set = ratatui::widgets::Dataset::default()
-        .marker(ratatui::symbols::Marker::Braille)
-        .graph_type(GraphType::Line)
-        .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-        .data(&points);
-
-    let chart = Chart::new(vec![line_set])
-        .block(chart_block(title, color))
-        .y_axis(
-            Axis::default()
-                .bounds([0.0, 100.0])
-                .labels(vec![
-                    Span::styled("100", Style::default().fg(t.overlay1)),
-                    Span::styled("50", Style::default().fg(t.overlay1)),
-                    Span::styled("0", Style::default().fg(t.overlay1)),
-                ])
-                .style(Style::default().fg(t.overlay1)),
-        );
-    frame.render_widget(chart, area);
-}
-
-fn render_compact_wave_chart(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    data: &VecDeque<(f64, f64)>,
-    color: ratatui::style::Color,
-) {
-    let block = chart_block(title, color);
+    let sev = Severity::from_usage(app.cpu_usage);
+    let block = panel_block(" CPU ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     if inner.height == 0 || inner.width == 0 {
-        return;
-    }
-
-    let latest = data.back().map(|(_, v)| *v).unwrap_or(0.0);
-    if inner.height == 1 {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!("{:>3.0}%", latest),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )),
-            inner,
-        );
         return;
     }
 
@@ -757,370 +120,545 @@ fn render_compact_wave_chart(
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(inner);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{:>3.0}% ", latest),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                severity_word(Severity::from_usage(latest)),
-                Style::default().fg(severity_color(Severity::from_usage(latest))),
-            ),
-        ])),
-        chunks[0],
-    );
+    let sub = if let Some(temp) = app.temp_c {
+        format!("{}c · {:.0}\u{b0}C", app.system.cpu_count, temp)
+    } else {
+        format!("{} cores", app.system.cpu_count)
+    };
 
-    if data.len() >= 2 {
-        let values: Vec<u64> = data
-            .iter()
-            .rev()
-            .take(inner.width as usize)
-            .rev()
-            .map(|(_, v)| v.max(0.0).round() as u64)
-            .collect();
+    let line1 = Line::from(vec![
+        severity_chip(sev),
+        Span::styled(
+            format!(" {:>4.1}% ", app.cpu_usage),
+            Style::default()
+                .fg(severity_color(sev))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate(&sub, chunks[0].width.saturating_sub(12) as usize),
+            Style::default().fg(t.overlay1),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line1), chunks[0]);
+
+    if chunks[1].height > 0 && app.cpu_history.len() >= 2 {
+        let points = sparkline_points(&app.cpu_history, chunks[1].width as usize);
         frame.render_widget(
             Sparkline::default()
-                .data(&values)
+                .data(&points)
                 .max(100)
-                .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-            chunks[1],
-        );
-    } else {
-        frame.render_widget(
-            Paragraph::new("waiting").alignment(Alignment::Center),
+                .style(Style::default().fg(t.accent_teal)),
             chunks[1],
         );
     }
 }
 
-fn chart_block(title: &str, color: ratatui::style::Color) -> Block<'static> {
-    // Borderless: the column frame carries the border, the chart only a title.
-    // Colored titles group each chart with its KPI sparkline hue.
-    panel_block("")
-        .title(Line::from(vec![Span::styled(
-            format!(" {title} "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )]))
-        .borders(ratatui::widgets::Borders::NONE)
+fn render_mem_card(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    let pct = app.mem_pct();
+    let sev = Severity::from_usage(pct);
+    let block = panel_block(" Memory ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    let sub = format!(
+        "{:.1}/{:.1} GB",
+        app.mem_used / 1024.0,
+        app.mem_total / 1024.0
+    );
+
+    let line1 = Line::from(vec![
+        severity_chip(sev),
+        Span::styled(
+            format!(" {:>4.1}% ", pct),
+            Style::default()
+                .fg(severity_color(sev))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate(&sub, chunks[0].width.saturating_sub(12) as usize),
+            Style::default().fg(t.overlay1),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line1), chunks[0]);
+
+    if chunks[1].height > 0 && app.mem_history.len() >= 2 {
+        let points = sparkline_points(&app.mem_history, chunks[1].width as usize);
+        frame.render_widget(
+            Sparkline::default()
+                .data(&points)
+                .max(100)
+                .style(Style::default().fg(t.accent_yellow)),
+            chunks[1],
+        );
+    }
+}
+
+fn render_storage_card(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    let pct = app.disk.pct as f64;
+    let sev = Severity::from_usage(pct);
+    let block = panel_block(" Storage ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    let sub = format!("{:.0}/{:.0} GB", app.disk.used_gb, app.disk.total_gb);
+    let line1 = Line::from(vec![
+        severity_chip(sev),
+        Span::styled(
+            format!(" {:>3.0}% ", pct),
+            Style::default()
+                .fg(severity_color(sev))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate(&sub, chunks[0].width.saturating_sub(10) as usize),
+            Style::default().fg(t.overlay1),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line1), chunks[0]);
+
+    // Show active disk I/O rates
+    let total_read: f64 = app.disk_io.iter().map(|d| d.read_bps).sum();
+    let total_write: f64 = app.disk_io.iter().map(|d| d.write_bps).sum();
+    let io_text = if total_read > 0.0 || total_write > 0.0 {
+        format!(
+            "R: {}/s  W: {}/s",
+            format_bytes(total_read),
+            format_bytes(total_write)
+        )
+    } else {
+        format!("Mount: {}", app.disk.mount_point)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate(&io_text, chunks[1].width as usize),
+            Style::default().fg(t.subtext0),
+        )),
+        chunks[1],
+    );
+}
+
+fn render_net_gpu_card(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    let block = panel_block(" Network & GPU ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    // Network line
+    let net_line = Line::from(vec![
+        Span::styled(
+            "↓",
+            Style::default()
+                .fg(t.accent_teal)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} ", format_bytes(app.net_down_bps)),
+            Style::default().fg(t.text),
+        ),
+        Span::styled(
+            "↑",
+            Style::default()
+                .fg(t.accent_orange)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format_bytes(app.net_up_bps), Style::default().fg(t.text)),
+    ]);
+    frame.render_widget(Paragraph::new(net_line), chunks[0]);
+
+    // GPU line or connection stats
+    let gpu_text = if let Some(gpu) = app.primary_gpu() {
+        let usage = gpu
+            .usage_pct
+            .map(|u| format!("{u:.0}%"))
+            .unwrap_or_else(|| String::from("N/A"));
+        let temp = gpu
+            .temp_c
+            .map(|c| format!("{c:.0}\u{b0}C"))
+            .unwrap_or_default();
+        format!("GPU {} {} {}", gpu.kind, usage, temp)
+    } else {
+        format!("Ports: {} listening", app.open_ports.len())
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate(&gpu_text, chunks[1].width as usize),
+            Style::default().fg(t.subtext0),
+        )),
+        chunks[1],
+    );
+}
+
+fn sparkline_points(history: &VecDeque<(f64, f64)>, width: usize) -> Vec<u64> {
+    history
+        .iter()
+        .rev()
+        .take(width)
+        .rev()
+        .map(|(_, v)| v.max(0.0).round() as u64)
+        .collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// RESOURCES — true-percent gauges only, then a compact Top CPU text list.
-// Rendered borderless inside the Resources column frame.
+// BODY — Middle trends and bottom intelligence
 // ═══════════════════════════════════════════════════════════════════════════════
-fn render_resource_bars(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
 
+fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
+    if area.height < 10 {
+        render_diagnostics_and_events(frame, area, app);
+        return;
+    }
+
+    // Two vertical sections: Top is Trends + Top Consumers; Bottom is Diagnostics + Events
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+
+    render_activity_section(frame, rows[0], app);
+    render_diagnostics_and_events(frame, rows[1], app);
+}
+
+fn render_activity_section(frame: &mut Frame, area: Rect, app: &AppState) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    render_trend_charts(frame, cols[0], app);
+    render_top_consumer_list(frame, cols[1], app);
+}
+
+fn render_trend_charts(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    let block = panel_block(" Real-time Activity Trends (120s) ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 4 || inner.width < 10 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+
+    let cpu_peak = app.cpu_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+    let cpu_title = format!("CPU · {:.1}% (Peak {:.0}%)", app.cpu_usage, cpu_peak);
+    render_braille_chart(
+        frame,
+        chunks[0],
+        &cpu_title,
+        &app.cpu_history,
+        t.accent_teal,
+    );
+
+    let mem_peak = app.mem_history.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+    let mem_title = format!("Memory · {:.1}% (Peak {:.0}%)", app.mem_pct(), mem_peak);
+    render_braille_chart(
+        frame,
+        chunks[1],
+        &mem_title,
+        &app.mem_history,
+        t.accent_yellow,
+    );
+}
+
+fn render_braille_chart(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    data: &VecDeque<(f64, f64)>,
+    color: ratatui::style::Color,
+) {
+    let t = theme::get();
+    if area.height < 3 || area.width < 10 {
+        return;
+    }
+
+    let title_line = Line::from(vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            title,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    if data.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Collecting telemetries...").style(Style::default().fg(t.overlay1)),
+            area,
+        );
+        return;
+    }
+
+    let points: Vec<(f64, f64)> = data.iter().copied().collect();
+    let dataset = ratatui::widgets::Dataset::default()
+        .marker(ratatui::symbols::Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+        .data(&points);
+
+    let chart = Chart::new(vec![dataset])
+        .block(Block::default().title(title_line))
+        .y_axis(
+            Axis::default()
+                .bounds([0.0, 100.0])
+                .labels(vec![
+                    Span::styled("0", Style::default().fg(t.overlay1)),
+                    Span::styled("50", Style::default().fg(t.overlay1)),
+                    Span::styled("100", Style::default().fg(t.overlay1)),
+                ])
+                .style(Style::default().fg(t.overlay1)),
+        );
+    frame.render_widget(chart, area);
+}
+
+fn render_top_consumer_list(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    let block = panel_block(" Top Resource Consumers ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 2 || inner.width < 14 {
+        return;
+    }
+
+    let header_line = Line::from(vec![
+        Span::styled(
+            " PID    ",
+            Style::default().fg(t.overlay1).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "CPU%  ",
+            Style::default().fg(t.overlay1).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "MEM     ",
+            Style::default().fg(t.overlay1).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "COMMAND",
+            Style::default().fg(t.overlay1).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    let mut lines = vec![header_line];
+    let max_rows = inner.height.saturating_sub(1) as usize;
+
+    for p in app.top_cpu_processes.iter().take(max_rows) {
+        let is_risk = p.is_high_risk;
+        let sev = if is_risk {
+            Severity::Critical
+        } else {
+            Severity::Ok
+        };
+        let name_w = (inner.width as usize).saturating_sub(24).max(10);
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<7} ", p.pid),
+                Style::default().fg(if is_risk { t.accent_red } else { t.text }),
+            ),
+            Span::styled(
+                format!("{:>4.1}% ", p.cpu_pct),
+                Style::default()
+                    .fg(if is_risk { t.accent_red } else { t.accent_teal })
+                    .add_modifier(if is_risk {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(
+                format!("{:>6.1}M ", p.mem_mb),
+                Style::default().fg(t.overlay1),
+            ),
+            severity_chip(sev),
+            Span::styled(
+                format!(" {}", truncate(&p.name, name_w)),
+                Style::default().fg(if is_risk { t.accent_red } else { t.text }),
+            ),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DIAGNOSTICS & EVENT STREAM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn render_diagnostics_and_events(frame: &mut Frame, area: Rect, app: &AppState) {
     if area.height < 4 {
         return;
     }
 
-    // Tall panels get separate NET + TEMP lines; short ones share a line.
-    let tall = area.height >= 10;
-    let rows_len = if tall { 5 } else { 4 };
-    // Reserve a Top CPU section when it fits (header + 3 rows).
-    let rest = area.height.saturating_sub(rows_len);
-    let show_top = rest >= 4;
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(rows_len), Constraint::Min(0)])
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(
-            (0..rows_len)
-                .map(|_| Constraint::Length(1))
-                .collect::<Vec<_>>(),
-        )
-        .split(chunks[0]);
+    render_root_cause_panel(frame, cols[0], app);
+    render_events_alerts_panel(frame, cols[1], app);
+}
 
-    render_detail_gauge(
-        frame,
-        rows[0],
-        "MEM ",
-        app.mem_pct(),
-        &format_memory_detail(app.mem_used, app.mem_total),
-        t.accent_yellow,
-    );
-    render_mini_gauge(frame, rows[1], "DSK ", app.disk.pct as f64, t.accent_green);
-    render_mini_gauge(frame, rows[2], "SWAP", app.swap_pct(), t.accent_purple);
-
-    let net_text = format!(
-        "↓{}/s ↑{}/s",
-        format_bytes(app.net_down_bps),
-        format_bytes(app.net_up_bps)
-    );
-    let temp_state = match app.temp_c {
-        Some(temp) if temp >= 80.0 => "Hot",
-        Some(temp) if temp >= 70.0 => "Warm",
-        Some(_) => "Normal",
-        None => "No sensor",
-    };
-    let temp_text = format!("{} {}", fmt_temp(app.temp_c), temp_state);
-    if tall {
-        render_stat_line(frame, rows[3], "NET ", &net_text, t.accent_teal);
-        render_stat_line(
-            frame,
-            rows[4],
-            "TEMP ",
-            &temp_text,
-            severity_color(Severity::from_usage(app.temp_c.unwrap_or(0.0))),
-        );
+fn render_root_cause_panel(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    let primary_cause = app.root_causes.first();
+    let is_critical = primary_cause.is_some_and(|c| c.severity == Severity::Critical);
+    let border_sev = if is_critical {
+        Severity::Critical
     } else {
-        let combined = format!("{net_text} · {temp_text}");
-        render_stat_line(frame, rows[3], "", &combined, t.overlay1);
-    }
-    if show_top {
-        render_top_processes(frame, chunks[1], app);
-    }
-}
+        Severity::Ok
+    };
 
-/// Top-3 CPU processes as plain text rows. The Processes tab owns gauges
-/// and interaction; here only names + values earn ink.
-fn render_top_processes(frame: &mut Frame, area: Rect, app: &AppState) {
-    if area.height < 2 || area.width < 12 || app.top_cpu_processes.is_empty() {
-        return;
-    }
-    let mut lines = vec![Line::from(dim("Top CPU"))];
-    let name_w = (area.width as usize).saturating_sub(8).max(4);
-    for process in app.top_cpu_processes.iter().take(3) {
-        let sev = Severity::from_usage(process.cpu_pct);
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(
-                    "{:<name_w$} ",
-                    truncate(&process.name, name_w),
-                    name_w = name_w
-                ),
-                Style::default().fg(theme::get().subtext1),
-            ),
-            Span::styled(
-                format!("{:>5.1}%", process.cpu_pct),
-                Style::default()
-                    .fg(severity_color(sev))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
+    let block = panel_block_severity(" Root-Cause Diagnostics ", border_sev);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-fn render_stat_line(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    text: &str,
-    color: ratatui::style::Color,
-) {
-    let mut line = String::from(label);
-    line.push_str(&truncate(
-        text,
-        (area.width as usize).saturating_sub(label.len()).max(4),
-    ));
-    frame.render_widget(
-        Paragraph::new(Span::styled(line, Style::default().fg(color))),
-        area,
-    );
-}
-
-fn render_process_bars(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    if area.height == 0 || area.width < 12 {
+    if inner.height == 0 || inner.width == 0 {
         return;
     }
 
-    let max_rows = area.height as usize;
-    let max_cpu = app
-        .top_cpu_processes
+    let mut lines = Vec::new();
+    let active_causes: Vec<_> = app
+        .root_causes
         .iter()
-        .take(max_rows)
-        .map(|p| p.cpu_pct)
-        .fold(1.0, f64::max);
+        .filter(|c| c.severity != Severity::Ok)
+        .collect();
 
-    for (idx, process) in app.top_cpu_processes.iter().take(max_rows).enumerate() {
-        let row = Rect {
-            x: area.x,
-            y: area.y + idx as u16,
-            width: area.width,
-            height: 1,
-        };
-        let name_width = (area.width / 3).clamp(6, 14);
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(name_width),
-                Constraint::Min(5),
-                Constraint::Length(5),
-            ])
-            .split(row);
-        let sev = Severity::from_usage(process.cpu_pct);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                truncate(&process.name, name_width as usize),
-                Style::default().fg(t.overlay1),
-            )),
-            cols[0],
-        );
-
-        let ratio = visual_ratio(process.cpu_pct / max_cpu * 100.0, cols[1].width);
-        let gauge = LineGauge::default()
-            .gauge_style(
-                Style::default()
-                    .fg(severity_color(sev))
-                    .add_modifier(Modifier::BOLD),
-            )
-            .ratio(ratio)
-            .label(Span::raw(""));
-        frame.render_widget(gauge, cols[1]);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!("{:>4.0}%", process.cpu_pct),
-                Style::default().fg(severity_color(sev)),
-            ))
-            .alignment(Alignment::Right),
-            cols[2],
-        );
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// STATUS — failed units, at-risk drives, hot GPU, events, alerts.
-// The primary cause already headlines the verdict bar; repeating it here was
-// the same data twice. Rendered borderless inside the Status column frame.
-// ═══════════════════════════════════════════════════════════════════════════════
-fn render_alerts_visual(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    let mut lines: Vec<Line> = Vec::new();
-    // Narrow panels show titles only; details would wrap mid-word.
-    let show_detail = area.width >= 40;
-
-    if let Some(unit) = app.failed_units.first() {
+    if active_causes.is_empty() {
         lines.push(Line::from(vec![
-            severity_chip(Severity::Critical),
+            severity_chip(Severity::Ok),
             Span::styled(
-                format!(" {}", truncate(&unit.unit, 14)),
+                " System Nominal ",
                 Style::default()
-                    .fg(severity_color(Severity::Critical))
+                    .fg(t.accent_green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!(" {}/{}", unit.active, unit.sub),
-                Style::default().fg(t.overlay1),
-            ),
         ]));
-    }
-
-    if let Some(drive) = app.storage_health.iter().find(|d| d.risk != Severity::Ok) {
-        let temp = fmt_temp(drive.temp_c);
-        lines.push(Line::from(vec![
-            severity_chip(drive.risk),
-            Span::styled(
-                format!(" {}", truncate(&drive.device, 10)),
-                Style::default().fg(t.text),
-            ),
-            Span::styled(
-                format!(" {temp} {}", truncate(&drive.model, 12)),
-                Style::default().fg(t.overlay1),
-            ),
-        ]));
-    }
-
-    // GPU context lives on the GPU tab + KPI: only surface it here when hot.
-    if let Some(gpu) = app.primary_gpu() {
-        let hot = gpu.temp_c.is_some_and(|temp| temp >= 85.0)
-            || gpu.usage_pct.is_some_and(|usage| usage >= 90.0);
-        if hot {
+        lines.push(Line::from(Span::styled(
+            "All telemetry indicators are operating within standard thresholds.",
+            Style::default().fg(t.subtext0),
+        )));
+        lines.push(Line::from(Span::styled(
+            "No CPU throttling, memory starvation, or failed services detected.",
+            Style::default().fg(t.overlay1),
+        )));
+    } else {
+        for cause in active_causes.iter().take(inner.height as usize) {
             lines.push(Line::from(vec![
-                severity_chip(Severity::Warn),
+                severity_chip(cause.severity),
                 Span::styled(
-                    format!(" {} {}", gpu.kind, truncate(&gpu.model, 16)),
+                    format!(" {}: ", cause.title),
                     Style::default()
-                        .fg(severity_color(Severity::Warn))
+                        .fg(severity_color(cause.severity))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        " {} {}",
-                        fmt_pct0(gpu.usage_pct.unwrap_or(0.0)),
-                        fmt_temp(gpu.temp_c)
+                    truncate(
+                        &cause.detail,
+                        inner.width.saturating_sub(cause.title.len() as u16 + 8) as usize,
                     ),
-                    Style::default().fg(t.overlay1),
+                    Style::default().fg(t.text),
                 ),
             ]));
         }
     }
 
-    for event in app.events.iter().rev().take(2) {
-        let mut spans = vec![
-            severity_chip(event.severity),
-            Span::styled(
-                format!(" {}", truncate_words(&event.title, 16)),
-                Style::default().fg(severity_color(event.severity)),
-            ),
-        ];
-        if show_detail {
-            spans.push(Span::styled(
-                format!(" — {}", truncate(&event.detail, 28)),
-                Style::default().fg(t.overlay1),
-            ));
-        }
-        lines.push(Line::from(spans));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_events_alerts_panel(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    let block = panel_block(" System Events & Timeline ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
     }
 
-    let alert_budget = (area.height as usize)
-        .saturating_sub(lines.len() + 2)
-        .min(3);
-    // Fit the panel, not a magic constant: cut words read as other words.
-    let alert_width = (area.width as usize).saturating_sub(4).max(10);
-    for alert in app.alerts.iter().take(alert_budget) {
-        let sev = if alert.starts_with('\u{26a1}') {
-            Severity::Critical
-        } else if alert.starts_with('\u{26a0}') {
-            Severity::Warn
-        } else {
-            Severity::Ok
-        };
+    let mut lines = Vec::new();
+
+    // Show failed systemd units if any
+    for unit in app.failed_units.iter().take(2) {
         lines.push(Line::from(vec![
-            severity_chip(sev),
+            severity_chip(Severity::Critical),
             Span::styled(
-                format!(" {}", truncate_words(alert, alert_width)),
-                Style::default().fg(t.text),
+                format!(" Failed: {}", truncate(&unit.unit, 18)),
+                Style::default()
+                    .fg(t.accent_red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" ({}/{})", unit.active, unit.sub),
+                Style::default().fg(t.overlay1),
             ),
         ]));
     }
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ALERTS INLINE — for tiny/small layouts
-// ═══════════════════════════════════════════════════════════════════════════════
-fn render_alerts_inline(frame: &mut Frame, area: Rect, app: &AppState) {
-    render_alerts_visual(frame, area, app);
-}
-
-fn visual_ratio(value: f64, width: u16) -> f64 {
-    let ratio = (value / 100.0).clamp(0.0, 1.0);
-    if value > 0.0 && width > 0 {
-        ratio.max(1.0 / f64::from(width))
-    } else {
-        ratio
+    // Show recent events
+    for event in app
+        .events
+        .iter()
+        .rev()
+        .take(inner.height.saturating_sub(lines.len() as u16) as usize)
+    {
+        lines.push(Line::from(vec![
+            severity_chip(event.severity),
+            Span::styled(
+                format!(" {}", truncate_words(&event.title, 18)),
+                Style::default().fg(severity_color(event.severity)),
+            ),
+            Span::styled(
+                format!(
+                    " · {}",
+                    truncate(&event.detail, inner.width.saturating_sub(22) as usize)
+                ),
+                Style::default().fg(t.overlay1),
+            ),
+        ]));
     }
-}
 
-fn format_memory_detail(used_mb: f64, total_mb: f64) -> String {
-    format!(
-        "{}/{}GiB",
-        format_truncated_gib(used_mb),
-        format_truncated_gib(total_mb)
-    )
-}
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "● Event stream idle — no anomalous state transitions recorded.",
+            Style::default().fg(t.overlay1),
+        )));
+    }
 
-fn format_truncated_gib(value_mb: f64) -> String {
-    let gib = (value_mb.max(0.0) / 1024.0 * 100.0).floor() / 100.0;
-    format!("{gib:.2}")
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 #[cfg(test)]

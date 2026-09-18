@@ -32,23 +32,23 @@ pub fn cpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
 
     let info_line = Line::from(vec![
         Span::styled(
-            format!("\u{2699} {}  ", truncate(&app.system.cpu_model, 32)),
-            Style::default().fg(t.text),
+            format!("Model: {}  ", truncate(&app.system.cpu_model, 48)),
+            Style::default().fg(t.text).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("Cores: {}  ", app.system.cpu_count),
-            Style::default().fg(t.overlay1),
+            Style::default().fg(t.accent_blue),
         ),
         Span::styled(
             format!(
-                "\u{25a0} Load: {} {} {}",
+                "Load: {} {} {}",
                 app.load_avg[0], app.load_avg[1], app.load_avg[2]
             ),
             Style::default().fg(t.overlay1),
         ),
     ]);
     frame.render_widget(
-        Paragraph::new(info_line).block(panel_block("\u{2699} CPU Info")),
+        Paragraph::new(info_line).block(panel_block(" CPU Specification ")),
         chunks[0],
     );
 
@@ -119,7 +119,7 @@ pub fn cpu_tab(frame: &mut Frame, area: Rect, app: &AppState) {
     render_chart(
         frame,
         chunks[2],
-        "\u{2699} CPU Trend (120s)",
+        " CPU Utilization Trend (120s) ",
         &app.cpu_history,
         t.accent_teal,
     );

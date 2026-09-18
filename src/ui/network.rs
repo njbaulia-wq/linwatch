@@ -40,7 +40,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         ),
     ]);
     frame.render_widget(
-        Paragraph::new(summary).block(panel_block("\u{2194} Network Summary")),
+        Paragraph::new(summary).block(panel_block(" Network Throughput Summary ")),
         chunks[0],
     );
 
@@ -52,7 +52,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
     render_network_sparkline(
         frame,
         graph_chunks[0],
-        "\u{2193} Download trend",
+        "↓ Download Activity",
         &app.net_down_history,
         app.net_down_bps,
         t.accent_teal,
@@ -60,7 +60,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
     render_network_sparkline(
         frame,
         graph_chunks[1],
-        "\u{2191} Upload trend",
+        "↑ Upload Activity",
         &app.net_up_history,
         app.net_up_bps,
         t.accent_orange,
@@ -96,8 +96,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
 
     if iface_rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("No interface activity")
-                .block(panel_block("\u{2194} Interface Details")),
+            Paragraph::new("No interface activity").block(panel_block(" Network Interfaces ")),
             bottom_chunks[0],
         );
     } else {
@@ -115,7 +114,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(header_col("Download")),
                 Cell::from(header_col("Upload")),
             ]))
-            .block(panel_block("\u{2194} Interface Details"))
+            .block(panel_block(" Network Interfaces "))
             .column_spacing(1),
             bottom_chunks[0],
         );
@@ -149,7 +148,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
 
     if port_rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("No active open ports detected").block(panel_block("🔓 Open Ports")),
+            Paragraph::new("No active open ports detected").block(panel_block(" Listening Ports ")),
             bottom_chunks[1],
         );
     } else if compact_ports {
@@ -179,7 +178,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(header_col("IP Address")),
                 Cell::from(header_col("Port")),
             ]))
-            .block(panel_block("🔓 Open Ports"))
+            .block(panel_block(" Listening Ports "))
             .column_spacing(1),
             bottom_chunks[1],
         );
@@ -202,7 +201,7 @@ pub fn network_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(header_col("Service")),
                 Cell::from(header_col("State")),
             ]))
-            .block(panel_block("🔓 Open Ports"))
+            .block(panel_block(" Listening Ports "))
             .column_spacing(1),
             bottom_chunks[1],
         );

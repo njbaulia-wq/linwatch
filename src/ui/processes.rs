@@ -93,10 +93,25 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
 
     // Progressive column disclosure: hide low-priority columns first so the
     // table never overflows narrow terminals.
-    let show_spark = area.width >= 110;
-    let show_why = area.width >= 100;
-    let show_state = area.width >= 88;
-    let show_thr = area.width >= 80;
+    let show_spark = area.width >= 120;
+    let show_why = area.width >= 105;
+    let show_thr = area.width >= 90;
+    let show_state = area.width >= 75;
+
+    let fixed_width = 8
+        + 8
+        + 9
+        + if show_thr { 5 } else { 0 }
+        + if show_state { 11 } else { 0 }
+        + if show_why { 17 } else { 0 }
+        + if show_spark { 12 } else { 0 };
+    let cols_count = 4
+        + usize::from(show_thr)
+        + usize::from(show_state)
+        + usize::from(show_why)
+        + usize::from(show_spark);
+    let spacing = cols_count.saturating_sub(1) as u16;
+    let available_name_w = (area.width.saturating_sub(fixed_width + spacing) as usize).max(18);
 
     let p_rows = sorted
         .iter()
@@ -132,7 +147,6 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                 t.text
             };
             let name_prefix = if is_dev { "[Dev] " } else { "" };
-            let name_width = if area.width < 100 { 12 } else { 18 };
 
             let mut cells = vec![
                 Cell::from(Span::styled(
@@ -166,10 +180,10 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             }
             cells.push(Cell::from(Span::styled(
                 format!(
-                    "{}  {}{}",
+                    "{} {}{}",
                     sev.symbol(),
                     name_prefix,
-                    truncate(&p.name, name_width)
+                    truncate(&p.name, available_name_w)
                 ),
                 Style::default().fg(name_color).add_modifier(if is_dev {
                     Modifier::BOLD
@@ -297,3 +311,40 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
 }
 
 use ratatui::widgets::Cell;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn processes_tab_renders_without_crashing() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = AppState::new(AppConfig::default());
+        app.top_cpu_processes = vec![ProcessInfo {
+            pid: 1234,
+            name: "long-running-worker-process-daemon".to_string(),
+            cpu_pct: 15.5,
+            mem_mb: 256.0,
+            threads: 4,
+            state: "S".to_string(),
+            reason: "Normal".to_string(),
+            is_high_risk: false,
+            is_dev: false,
+        }];
+
+        let mut table_state = TableState::default();
+        terminal
+            .draw(|frame| {
+                processes_tab(frame, frame.size(), &app, &mut table_state);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        // Verify buffer has content and shows part of the process name
+        let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content_str.contains("long-running-worker"));
+    }
+}

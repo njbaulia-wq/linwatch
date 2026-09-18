@@ -11,78 +11,74 @@ use super::theme;
 
 pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
     let t = theme::get();
-    let wide = app.terminal_width >= 110;
-    let compact = app.terminal_width < 100;
+    let width = area.width;
+    let compact = width < 90;
+    let ultra_compact = width < 70;
 
     let layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(area);
+
     let left_w = layout[0].width.saturating_sub(1) as usize;
-    let right_w = layout[1].width.saturating_sub(1) as usize;
+    let _right_w = layout[1].width.saturating_sub(1) as usize;
 
-    // Title always carries the environment badge (HW/VM/CTR/WSL) so
-    // container/WSL users know counters are host-scoped.
-    let title = Span::styled(
-        format!(
-            "LinWatch v{} [{}]",
-            env!("CARGO_PKG_VERSION"),
-            app.env.badge()
+    // Line 1 Left: Brand, Version, Environment badge, OS name
+    let mut left_l1_spans = vec![
+        Span::styled(
+            "LINWATCH ",
+            Style::default()
+                .fg(t.accent_blue)
+                .add_modifier(Modifier::BOLD),
         ),
-        Style::default()
-            .fg(t.accent_blue)
-            .add_modifier(Modifier::BOLD),
-    );
+        Span::styled(
+            format!("v{} ", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(t.overlay1),
+        ),
+        Span::styled(
+            format!("[{}]", app.env.badge()),
+            Style::default()
+                .fg(t.accent_teal)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if !compact {
+        left_l1_spans.push(Span::styled(
+            format!(" · {} {}", app.system.os_name, app.system.os_version),
+            Style::default().fg(t.subtext0),
+        ));
+    }
 
-    let mut meta = if compact {
+    // Line 2 Left: Hostname, Uptime, Cores, Procs
+    let left_l2_str = if ultra_compact {
+        format!("{} · Up {}", app.system.hostname, app.uptime)
+    } else if compact {
         format!(
-            "Host: {} | {} {}",
-            app.system.hostname, app.system.os_name, app.system.os_version
+            "{} · Up {} · {}c",
+            app.system.hostname, app.uptime, app.system.cpu_count
         )
     } else {
         format!(
-            "Host: {} | {} {} | Sec: {}",
-            app.system.hostname, app.system.os_name, app.system.os_version, app.system.selinux_mode
+            "Host: {} · Up {} · {} cores · {} procs",
+            app.system.hostname, app.uptime, app.system.cpu_count, app.process_count
         )
     };
-    if wide {
-        meta.push_str(&format!(
-            " | Kernel: {}",
-            common::truncate(&app.system.kernel, 14),
-        ));
-    }
-    if app.env.is_host_scoped() {
-        meta.push_str(&format!(" | {}", app.platform_summary()));
-    }
-    let meta_line = Line::from(Span::styled(
-        common::truncate(&meta, left_w.max(8)),
+    let left_l2_spans = vec![Span::styled(
+        common::truncate(&left_l2_str, left_w.max(8)),
         Style::default().fg(t.subtext1),
-    ));
+    )];
 
+    let header_block = common::panel_block("").borders(ratatui::widgets::Borders::NONE);
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(left_l1_spans), Line::from(left_l2_spans)])
+            .block(header_block.clone()),
+        layout[0],
+    );
+
+    // Right Side
     let health_sev = crate::types::Severity::from_health(app.health_score as f64);
     let health_color = common::severity_color(health_sev);
     let sample_color = common::sample_status_color(app.sample_status());
-    let temp_value = common::fmt_temp(app.temp_c);
-    let temp_state = match app.temp_c {
-        Some(temp) if temp >= 80.0 => "Hot",
-        Some(temp) if temp >= 70.0 => "Warm",
-        Some(_) => "Normal",
-        None => "No sensor",
-    };
-    let gpu_status = app
-        .primary_gpu()
-        .map(|gpu| {
-            let usage = gpu
-                .usage_pct
-                .map(|value| format!("{value:.0}%"))
-                .unwrap_or_else(|| String::from("N/A"));
-            let temp = gpu
-                .temp_c
-                .map(|value| format!("{value:.0}\u{b0}C"))
-                .unwrap_or_else(|| String::from("N/A"));
-            format!("GPU {} {usage} {temp}", gpu.kind)
-        })
-        .unwrap_or_else(|| String::from("GPU N/A"));
     let status_label = match health_sev {
         crate::types::Severity::Ok => "Healthy",
         crate::types::Severity::Warn => "Attention",
@@ -90,7 +86,8 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
         crate::types::Severity::Neutral => "Monitoring",
     };
 
-    let mut health_spans = vec![
+    // Line 1 Right: Health Score, Data Quality, Battery
+    let mut right_l1_spans = vec![
         common::severity_chip(health_sev),
         Span::styled(
             format!(" {status_label} {}%  ", app.health_score),
@@ -106,66 +103,46 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
                 .add_modifier(Modifier::BOLD),
         ),
     ];
-    if !compact {
-        health_spans.push(Span::styled("  Updated ", Style::default().fg(t.overlay1)));
-        health_spans.push(Span::styled(
-            format!("{:.1}s", app.last_sample_at.elapsed().as_secs_f64()),
-            Style::default().fg(t.overlay1),
+    if let Some(bat) = app.battery_pct {
+        let bat_color = if bat <= app.battery_alert {
+            t.accent_red
+        } else {
+            t.accent_green
+        };
+        right_l1_spans.push(Span::styled(
+            format!(" · Bat {bat}%"),
+            Style::default().fg(bat_color),
         ));
     }
-    let health_line = Line::from(health_spans);
 
-    let context = if compact {
-        format!(
-            "CPU {temp_value} | {}",
-            app.primary_gpu()
-                .map(|gpu| format!("GPU {}", gpu.kind))
-                .unwrap_or_else(|| String::from("GPU N/A"))
-        )
-    } else if let Some(bat) = app.battery_pct {
-        format!(
-            "Battery: {}% {} | CPU Temp: {} {} | {} | Load: {} {} {}",
-            bat,
-            app.battery_status,
-            temp_value,
-            temp_state,
-            gpu_status,
-            app.load_avg[0],
-            app.load_avg[1],
-            app.load_avg[2]
-        )
-    } else {
-        format!(
-            "CPU Temp: {} {} | {} | Load: {} {} {}",
-            temp_value, temp_state, gpu_status, app.load_avg[0], app.load_avg[1], app.load_avg[2]
-        )
-    };
-
-    let header_block = common::panel_block("").borders(ratatui::widgets::Borders::NONE);
-    let content = vec![Line::from(title), meta_line];
-    frame.render_widget(
-        Paragraph::new(content).block(header_block.clone()),
-        layout[0],
-    );
-
-    let right_block = common::panel_block("").borders(ratatui::widgets::Borders::NONE);
-    // Two lines max: health first, one merged context line after.
-    let right_lines = vec![
-        health_line,
-        Line::from(Span::styled(
-            common::truncate(
-                &format!(
-                    "{context} | {} cores · {} procs · Up {}",
-                    app.system.cpu_count, app.process_count, app.uptime
-                ),
-                right_w.max(8),
+    // Line 2 Right: Load averages & CPU Temperature
+    let mut right_l2_spans = vec![
+        Span::styled("Load: ", Style::default().fg(t.overlay1)),
+        Span::styled(
+            format!(
+                "{} {} {}",
+                app.load_avg[0], app.load_avg[1], app.load_avg[2]
             ),
-            Style::default().fg(t.overlay1),
-        )),
+            Style::default().fg(t.subtext0),
+        ),
     ];
+    if let Some(temp) = app.temp_c {
+        let temp_color = if temp >= app.temp_alert {
+            t.accent_red
+        } else if temp >= 70.0 {
+            t.accent_orange
+        } else {
+            t.accent_teal
+        };
+        right_l2_spans.push(Span::styled(
+            format!(" · CPU {:.0}\u{b0}C", temp),
+            Style::default().fg(temp_color),
+        ));
+    }
+
     frame.render_widget(
-        Paragraph::new(right_lines)
-            .block(right_block)
+        Paragraph::new(vec![Line::from(right_l1_spans), Line::from(right_l2_spans)])
+            .block(header_block)
             .alignment(Alignment::Right),
         layout[1],
     );

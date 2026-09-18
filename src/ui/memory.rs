@@ -29,20 +29,8 @@ pub fn memory_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         .constraints([Constraint::Length(2), Constraint::Length(2)])
         .split(bar_area);
 
-    render_line_gauge(
-        frame,
-        bars[0],
-        "\u{25a3} RAM",
-        app.mem_pct(),
-        t.accent_yellow,
-    );
-    render_line_gauge(
-        frame,
-        bars[1],
-        "\u{21c4} SWAP",
-        app.swap_pct(),
-        t.accent_purple,
-    );
+    render_line_gauge(frame, bars[0], "RAM ", app.mem_pct(), t.accent_yellow);
+    render_line_gauge(frame, bars[1], "Swap ", app.swap_pct(), t.accent_purple);
 
     // Narrow: stack details above the trend chart instead of squeezing 50/50.
     let (detail_panel, chart_panel) = if area.width < 80 {
@@ -59,9 +47,12 @@ pub fn memory_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         (side[0], side[1])
     };
 
+    let mem_available = (app.mem_total - app.mem_used).max(0.0);
+    let swap_free = (app.swap_total - app.swap_used).max(0.0);
+
     let details = vec![
         Line::from(vec![
-            styled("\u{25a3} RAM:  ", t.accent_yellow),
+            styled("RAM Active:    ", t.accent_yellow),
             styled(
                 format!(
                     "{:.0} MB / {:.0} MB ({:.1}%)",
@@ -73,7 +64,11 @@ pub fn memory_tab(frame: &mut Frame, area: Rect, app: &AppState) {
             ),
         ]),
         Line::from(vec![
-            styled("\u{21c4} Swap: ", t.accent_purple),
+            styled("RAM Available: ", t.subtext0),
+            styled(format!("{:.0} MB", mem_available), t.text),
+        ]),
+        Line::from(vec![
+            styled("Swap Active:   ", t.accent_purple),
             styled(
                 format!(
                     "{:.0} MB / {:.0} MB ({:.1}%)",
@@ -85,24 +80,19 @@ pub fn memory_tab(frame: &mut Frame, area: Rect, app: &AppState) {
             ),
         ]),
         Line::from(vec![
-            styled("\u{2603} Temp: ", t.overlay1),
-            styled(
-                app.temp_c
-                    .map(|temp| format!("{temp:.1}\u{b0}C"))
-                    .unwrap_or_else(|| String::from("N/A")),
-                t.text,
-            ),
+            styled("Swap Free:     ", t.subtext0),
+            styled(format!("{:.0} MB", swap_free), t.text),
         ]),
     ];
     frame.render_widget(
-        Paragraph::new(details).block(panel_block("\u{25a3} Memory Details")),
+        Paragraph::new(details).block(panel_block(" Memory Breakdown ")),
         detail_panel,
     );
 
     render_chart(
         frame,
         chart_panel,
-        "\u{25a3} Memory Trend (120s)",
+        " Memory Utilization Trend (120s) ",
         &app.mem_history,
         t.accent_yellow,
     );

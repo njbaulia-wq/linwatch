@@ -34,7 +34,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
     render_line_gauge(
         frame,
         gauge_area,
-        "\u{25c6} /",
+        "Root Filesystem (/) ",
         app.disk.pct as f64,
         t.accent_green,
     );
@@ -47,8 +47,8 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
             .map(|dio| {
                 Row::new(vec![
                     Cell::from(dio.device.as_str()),
-                    Cell::from(format!("/s {}", format_bytes(dio.read_bps))),
-                    Cell::from(format!("/s {}", format_bytes(dio.write_bps))),
+                    Cell::from(format!("{}/s", format_bytes(dio.read_bps))),
+                    Cell::from(format!("{}/s", format_bytes(dio.write_bps))),
                 ])
                 .style(Style::default().fg(t.text))
             })
@@ -68,7 +68,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(header_col("Read")),
                 Cell::from(header_col("Write")),
             ]))
-            .block(panel_block("\u{2194} Disk I/O"))
+            .block(panel_block(" Disk I/O Throughput "))
             .column_spacing(1),
             chunks[2],
         );
@@ -144,7 +144,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
         frame.render_widget(
             Table::new(health_rows, health_widths)
                 .header(Row::new(health_header))
-                .block(panel_block("\u{25c6} Storage Health"))
+                .block(panel_block(" Physical Drive Health "))
                 .column_spacing(1),
             chunks[1],
         );
@@ -169,7 +169,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
 
     if mount_rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("No mount data").block(panel_block("\u{25c6} Mount Points")),
+            Paragraph::new("No mount data").block(panel_block(" Filesystem Mount Points ")),
             chunks[3],
         );
     } else {
@@ -187,7 +187,7 @@ pub fn storage_tab(frame: &mut Frame, area: Rect, app: &AppState) {
                 Cell::from(header_col("Usage")),
                 Cell::from(header_col("Size")),
             ]))
-            .block(panel_block("\u{25c6} Mount Points"))
+            .block(panel_block(" Filesystem Mount Points "))
             .column_spacing(1),
             chunks[3],
         );

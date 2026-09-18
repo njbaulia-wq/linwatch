@@ -16,7 +16,7 @@ use crate::types::{AppConfig, ViewTab};
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph, Tabs},
     Frame,
@@ -222,19 +222,25 @@ fn ui(frame: &mut Frame, app: &AppState, process_table_state: &mut ratatui::widg
 
 fn render_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
     let t = theme::get();
-    // Compact tab labels on narrow terminals so all 7 tabs stay visible.
     let titles: Vec<Span> = ViewTab::all()
         .iter()
         .enumerate()
         .map(|(i, tab)| {
-            let label = if area.width < 64 {
-                format!(" {} ", tab.icon())
-            } else if area.width < 96 {
-                format!("{} {}", i + 1, short_tab_label(tab))
+            let label = if area.width < 72 {
+                format!("{}:{}", i + 1, short_tab_label(tab))
             } else {
-                format!(" {} {} ", tab.icon(), tab.label())
+                format!("{}:{}", i + 1, tab.label())
             };
-            Span::raw(label)
+            if i == app.active_tab.index() {
+                Span::styled(
+                    format!(" [{label}] "),
+                    Style::default()
+                        .fg(t.accent_blue)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(format!("  {label}  "), Style::default().fg(t.overlay1))
+            }
         })
         .collect();
 
@@ -242,12 +248,11 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
         .select(app.active_tab.index())
         .highlight_style(
             Style::default()
-                .fg(Color::Rgb(24, 24, 37))
-                .bg(t.accent_blue)
+                .fg(t.accent_blue)
                 .add_modifier(Modifier::BOLD),
         )
         .style(Style::default().fg(t.overlay1))
-        .divider(Span::raw(" "));
+        .divider(Span::styled("│", Style::default().fg(t.surface1)));
 
     frame.render_widget(tabs, area);
 }

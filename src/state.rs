@@ -251,6 +251,7 @@ impl AppState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn platform_summary(&self) -> String {
         if self.env.is_host_scoped() {
             format!(

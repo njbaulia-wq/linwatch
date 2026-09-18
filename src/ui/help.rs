@@ -18,7 +18,7 @@ pub fn help(frame: &mut Frame, area: Rect) {
     let modal = centered_rect(66, 46, area);
     let lines = vec![
         Line::from(Span::styled(
-            " \u{2699} Keyboard Controls ",
+            " Keyboard Controls ",
             Style::default()
                 .fg(t.accent_blue)
                 .add_modifier(Modifier::BOLD),
@@ -75,7 +75,7 @@ pub fn help(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            " \u{2726} Severity cues ",
+            " Status Indicators ",
             Style::default()
                 .fg(t.accent_blue)
                 .add_modifier(Modifier::BOLD),
@@ -91,7 +91,7 @@ pub fn help(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            " \u{2726} Metrics ",
+            " Direct Kernel Telemetry ",
             Style::default()
                 .fg(t.accent_blue)
                 .add_modifier(Modifier::BOLD),
@@ -114,7 +114,7 @@ pub fn help(frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: true }).block(
             Block::default()
-                .title(" \u{2699} Help ")
+                .title(" Help & Keyboard Controls ")
                 .borders(Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(Style::default().fg(t.accent_blue))
