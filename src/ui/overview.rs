@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Axis, Chart, GraphType, Paragraph, Wrap},
+    widgets::{Axis, Chart, GraphType, Paragraph},
     Frame,
 };
 
@@ -323,11 +323,11 @@ fn render_network_card(frame: &mut Frame, area: Rect, app: &AppState) {
 
 fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
     if area.height < 10 {
-        render_diagnostics_and_events(frame, area, app);
+        render_system_vitals_panel(frame, area, app);
         return;
     }
 
-    // Two vertical sections: Top is CPU & GPU running charts; Bottom is Consumers & Diagnostics
+    // Two vertical sections: Top is CPU & GPU running charts; Bottom is Consumers & Vitals
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -362,7 +362,7 @@ fn render_intelligence_row(frame: &mut Frame, area: Rect, app: &AppState) {
         .split(area);
 
     render_top_consumer_list(frame, cols[0], app);
-    render_diagnostics_and_events(frame, cols[1], app);
+    render_system_vitals_panel(frame, cols[1], app);
 }
 
 fn render_cpu_chart(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -659,34 +659,30 @@ fn render_top_consumer_list(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DIAGNOSTICS & EVENT STREAM
+// SYSTEM VITALS & ENVIRONMENT (Konsep 1: Unified Vitals & Hardware Insights)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-fn render_diagnostics_and_events(frame: &mut Frame, area: Rect, app: &AppState) {
-    if area.height < 4 {
+fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
+    let t = theme::get();
+    if area.height == 0 || area.width == 0 {
         return;
     }
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    render_root_cause_panel(frame, cols[0], app);
-    render_events_alerts_panel(frame, cols[1], app);
-}
-
-fn render_root_cause_panel(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
     let primary_cause = app.root_causes.first();
-    let is_critical = primary_cause.is_some_and(|c| c.severity == Severity::Critical);
+    let has_failed_units = !app.failed_units.is_empty();
+    let is_critical =
+        primary_cause.is_some_and(|c| c.severity == Severity::Critical) || has_failed_units;
+    let is_warn =
+        primary_cause.is_some_and(|c| c.severity == Severity::Warn) || app.health_score < 75;
     let border_sev = if is_critical {
         Severity::Critical
+    } else if is_warn {
+        Severity::Warn
     } else {
         Severity::Ok
     };
 
-    let block = panel_block_severity(" Root-Cause Diagnostics ", border_sev);
+    let block = panel_block_severity(" System Vitals & Environment ", border_sev);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -695,114 +691,227 @@ fn render_root_cause_panel(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     let mut lines = Vec::new();
-    let active_causes: Vec<_> = app
-        .root_causes
-        .iter()
-        .filter(|c| c.severity != Severity::Ok)
-        .collect();
+    let label_w = 15;
 
-    if active_causes.is_empty() {
-        lines.push(Line::from(vec![
-            severity_chip(Severity::Ok),
-            Span::styled(
-                " System Nominal ",
-                Style::default()
-                    .fg(t.accent_green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(Span::styled(
-            "All telemetry indicators are operating within standard thresholds.",
-            Style::default().fg(t.subtext0),
-        )));
-        lines.push(Line::from(Span::styled(
-            "No CPU throttling, memory starvation, or failed services detected.",
-            Style::default().fg(t.overlay1),
-        )));
-    } else {
-        for cause in active_causes.iter().take(inner.height as usize) {
-            lines.push(Line::from(vec![
+    // 1. Health Status Banner (Line 1)
+    let health_line =
+        if let Some(cause) = app.root_causes.iter().find(|c| c.severity != Severity::Ok) {
+            Line::from(vec![
                 severity_chip(cause.severity),
                 Span::styled(
-                    format!(" {}: ", cause.title),
+                    format!(" HEALTH {}% · ", app.health_score),
                     Style::default()
                         .fg(severity_color(cause.severity))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     truncate(
-                        &cause.detail,
-                        inner.width.saturating_sub(cause.title.len() as u16 + 8) as usize,
+                        &format!("{}: {}", cause.title, cause.detail),
+                        inner.width.saturating_sub(18) as usize,
                     ),
                     Style::default().fg(t.text),
                 ),
-            ]));
-        }
-    }
+            ])
+        } else if has_failed_units {
+            Line::from(vec![
+                severity_chip(Severity::Critical),
+                Span::styled(
+                    format!(" HEALTH {}% · Service Alert ", app.health_score),
+                    Style::default()
+                        .fg(t.accent_red)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    truncate(
+                        &format!("{} systemd units failed", app.failed_units.len()),
+                        inner.width.saturating_sub(18) as usize,
+                    ),
+                    Style::default().fg(t.text),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                severity_chip(Severity::Ok),
+                Span::styled(
+                    format!(" HEALTH {}% · Nominal ", app.health_score),
+                    Style::default()
+                        .fg(t.accent_green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "(All telemetries within normal thresholds)",
+                    Style::default().fg(t.overlay1),
+                ),
+            ])
+        };
+    lines.push(health_line);
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-}
+    // 2. OS, Kernel & Environment
+    let os_name = if app.system.os_name.is_empty() {
+        "Linux"
+    } else {
+        &app.system.os_name
+    };
+    let kernel = if app.system.kernel.is_empty() {
+        "Unknown"
+    } else {
+        &app.system.kernel
+    };
+    let os_str = format!("{} · {} ({})", os_name, kernel, app.env.label());
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<width$}: ", "OS & Kernel", width = label_w),
+            Style::default().fg(t.overlay1),
+        ),
+        Span::styled(
+            truncate(
+                &os_str,
+                inner.width.saturating_sub(label_w as u16 + 2) as usize,
+            ),
+            Style::default().fg(t.text),
+        ),
+    ]));
 
-fn render_events_alerts_panel(frame: &mut Frame, area: Rect, app: &AppState) {
-    let t = theme::get();
-    let block = panel_block(" System Events & Timeline ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // 3. CPU Hardware & Temperature
+    let cpu_model = if app.system.cpu_model.is_empty() {
+        "Processor"
+    } else {
+        &app.system.cpu_model
+    };
+    let cpu_detail = if let Some(temp) = app.temp_c {
+        format!(
+            "{} ({} cores · {:.0}\u{b0}C)",
+            cpu_model, app.system.cpu_count, temp
+        )
+    } else {
+        format!("{} ({} cores)", cpu_model, app.system.cpu_count)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<width$}: ", "CPU Hardware", width = label_w),
+            Style::default().fg(t.overlay1),
+        ),
+        Span::styled(
+            truncate(
+                &cpu_detail,
+                inner.width.saturating_sub(label_w as u16 + 2) as usize,
+            ),
+            Style::default().fg(t.text),
+        ),
+    ]));
 
-    if inner.height == 0 || inner.width == 0 {
-        return;
-    }
+    // 4. Memory Breakdown (RAM used / total, available, swap)
+    let avail_gb = (app.mem_total - app.mem_used).max(0.0) / 1024.0;
+    let swap_str = if app.swap_total > 0.0 {
+        format!(
+            "{:.1}/{:.1} GB swap ({:.0}%)",
+            app.swap_used / 1024.0,
+            app.swap_total / 1024.0,
+            app.swap_pct()
+        )
+    } else {
+        String::from("swap disabled")
+    };
+    let mem_detail = format!(
+        "{:.1}/{:.1} GB used · {:.1} GB avail · {}",
+        app.mem_used / 1024.0,
+        app.mem_total / 1024.0,
+        avail_gb,
+        swap_str
+    );
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<width$}: ", "Memory Detail", width = label_w),
+            Style::default().fg(t.overlay1),
+        ),
+        Span::styled(
+            truncate(
+                &mem_detail,
+                inner.width.saturating_sub(label_w as u16 + 2) as usize,
+            ),
+            Style::default().fg(t.text),
+        ),
+    ]));
 
-    let mut lines = Vec::new();
-
-    // Show failed systemd units if any
-    for unit in app.failed_units.iter().take(2) {
-        lines.push(Line::from(vec![
+    // 5. System Services & Processes
+    let services_line = if !app.failed_units.is_empty() {
+        let failed_names = app
+            .failed_units
+            .iter()
+            .take(2)
+            .map(|u| u.unit.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Line::from(vec![
+            Span::styled(
+                format!("{:<width$}: ", "Services", width = label_w),
+                Style::default().fg(t.overlay1),
+            ),
             severity_chip(Severity::Critical),
             Span::styled(
-                format!(" Failed: {}", truncate(&unit.unit, 18)),
+                format!(
+                    " {} failed: {}",
+                    app.failed_units.len(),
+                    truncate(
+                        &failed_names,
+                        inner.width.saturating_sub(label_w as u16 + 16) as usize
+                    )
+                ),
                 Style::default()
                     .fg(t.accent_red)
                     .add_modifier(Modifier::BOLD),
             ),
+        ])
+    } else {
+        Line::from(vec![
             Span::styled(
-                format!(" ({}/{})", unit.active, unit.sub),
+                format!("{:<width$}: ", "Services", width = label_w),
                 Style::default().fg(t.overlay1),
             ),
-        ]));
-    }
-
-    // Show recent events
-    for event in app
-        .events
-        .iter()
-        .rev()
-        .take(inner.height.saturating_sub(lines.len() as u16) as usize)
-    {
-        lines.push(Line::from(vec![
-            severity_chip(event.severity),
-            Span::styled(
-                format!(" {}", truncate_words(&event.title, 18)),
-                Style::default().fg(severity_color(event.severity)),
-            ),
+            Span::styled("● ", Style::default().fg(t.accent_green)),
             Span::styled(
                 format!(
-                    " · {}",
-                    truncate(&event.detail, inner.width.saturating_sub(22) as usize)
+                    "{} processes running · 0 failed systemd units",
+                    app.process_count
                 ),
-                Style::default().fg(t.overlay1),
+                Style::default().fg(t.subtext0),
             ),
-        ]));
-    }
+        ])
+    };
+    lines.push(services_line);
 
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "● Event stream idle — no anomalous state transitions recorded.",
+    // 6. Security, Host & Uptime
+    let host = if app.system.hostname.is_empty() {
+        "localhost"
+    } else {
+        &app.system.hostname
+    };
+    let security = if app.system.selinux_mode.is_empty() {
+        "AppArmor/Standard"
+    } else {
+        &app.system.selinux_mode
+    };
+    let sec_detail = format!(
+        "Host: {} · Up {} · Security: {}",
+        host, app.uptime, security
+    );
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<width$}: ", "Host & Security", width = label_w),
             Style::default().fg(t.overlay1),
-        )));
-    }
+        ),
+        Span::styled(
+            truncate(
+                &sec_detail,
+                inner.width.saturating_sub(label_w as u16 + 2) as usize,
+            ),
+            Style::default().fg(t.overlay1),
+        ),
+    ]));
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    let max_display_lines = inner.height as usize;
+    let visible_lines: Vec<Line> = lines.into_iter().take(max_display_lines).collect();
+    frame.render_widget(Paragraph::new(visible_lines), inner);
 }
 
 #[cfg(test)]
@@ -968,6 +1077,37 @@ mod tests {
         assert!(
             buf.content.iter().any(|c| c.symbol() != " "),
             "blank render with GPU history"
+        );
+    }
+
+    #[test]
+    fn overview_renders_with_vitals_alerts() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = make_app();
+        app.health_score = 45;
+        app.root_causes = vec![crate::types::RootCause {
+            severity: Severity::Critical,
+            title: "Memory Thrashing".into(),
+            detail: "Swap in progress and active memory > 95%".into(),
+        }];
+        app.failed_units = vec![crate::types::SystemdUnitIssue {
+            unit: "nginx.service".into(),
+            load: "loaded".into(),
+            active: "failed".into(),
+            sub: "failed".into(),
+            description: "A high performance web server".into(),
+        }];
+        terminal
+            .draw(|frame| {
+                overview(frame, frame.size(), &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buf.content.iter().any(|c| c.symbol() != " "),
+            "blank render with vitals alerts"
         );
     }
 }
