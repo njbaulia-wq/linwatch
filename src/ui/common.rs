@@ -125,6 +125,56 @@ pub fn format_bytes(bytes_per_second: f64) -> String {
     }
 }
 
+pub fn format_rate(bytes_per_second: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes_per_second.max(0.0);
+
+    if b >= GB {
+        format!("{:.1} GB/s", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB/s", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB/s", b / KB)
+    } else {
+        format!("{:.0} B/s", b)
+    }
+}
+
+/// Compact 5-character rate for tabular columns (`  10M`, ` 1.2M`, ` 500B`).
+pub fn format_compact_rate(bytes_per_second: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes_per_second.max(0.0);
+
+    if b >= GB {
+        let g = b / GB;
+        if g < 10.0 {
+            format!("{g:>4.1}G")
+        } else {
+            format!("{g:>4.0}G")
+        }
+    } else if b >= MB {
+        let m = b / MB;
+        if m < 10.0 {
+            format!("{m:>4.1}M")
+        } else {
+            format!("{m:>4.0}M")
+        }
+    } else if b >= KB {
+        let k = b / KB;
+        if k < 10.0 {
+            format!("{k:>4.1}K")
+        } else {
+            format!("{k:>4.0}K")
+        }
+    } else {
+        format!("{b:>4.0}B")
+    }
+}
+
 pub fn truncate(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         value.to_string()
@@ -257,5 +307,37 @@ mod tests {
         assert!(Breakpoint::Tiny < Breakpoint::Compact);
         assert!(Breakpoint::Compact < Breakpoint::Full);
         assert!(Breakpoint::Full < Breakpoint::Wide);
+    }
+
+    #[test]
+    fn format_rate_units() {
+        assert_eq!(format_rate(500.0), "500 B/s");
+        assert_eq!(format_rate(1024.0), "1.0 KB/s");
+        assert_eq!(format_rate(10.0 * 1024.0 * 1024.0), "10.0 MB/s");
+        assert_eq!(format_rate(2.5 * 1024.0 * 1024.0 * 1024.0), "2.5 GB/s");
+    }
+
+    #[test]
+    fn format_compact_rate_fixed_width() {
+        assert_eq!(format_compact_rate(0.0), "   0B");
+        assert_eq!(format_compact_rate(500.0), " 500B");
+        assert_eq!(format_compact_rate(1024.0), " 1.0K");
+        assert_eq!(format_compact_rate(15.0 * 1024.0), "  15K");
+        assert_eq!(format_compact_rate(2.5 * 1024.0 * 1024.0), " 2.5M");
+        assert_eq!(format_compact_rate(45.0 * 1024.0 * 1024.0), "  45M");
+        assert_eq!(format_compact_rate(1.2 * 1024.0 * 1024.0 * 1024.0), " 1.2G");
+
+        // Verify each formatted compact rate is exactly 5 characters wide
+        for val in [
+            0.0,
+            500.0,
+            1024.0,
+            15360.0,
+            2621440.0,
+            47185920.0,
+            1288490188.0,
+        ] {
+            assert_eq!(format_compact_rate(val).chars().count(), 5);
+        }
     }
 }

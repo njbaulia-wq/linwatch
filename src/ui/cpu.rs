@@ -452,6 +452,8 @@ mod tests {
                 reason: String::new(),
                 is_high_risk: false,
                 is_dev: true,
+                io_read_bps: 0.0,
+                io_write_bps: 0.0,
             },
             ProcessInfo {
                 pid: 5678,
@@ -464,6 +466,8 @@ mod tests {
                 reason: String::new(),
                 is_high_risk: false,
                 is_dev: false,
+                io_read_bps: 0.0,
+                io_write_bps: 0.0,
             },
         ];
 

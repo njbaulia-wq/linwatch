@@ -212,7 +212,7 @@ linwatch --version            # Show version
 
 | Key | Action |
 |-----|--------|
-| `S` | Cycle sort order (CPU↓, CPU↑, MEM↓, MEM↑, PID↑, PID↓) |
+| `S` | Cycle sort order (CPU↓, CPU↑, MEM↓, MEM↑, DISK I/O↓, DISK I/O↑, PID↑, PID↓) |
 | `↑` / `↓` | Navigate process list selection |
 | `K` | Terminate selected process with SIGTERM (press again to confirm) |
 | `/` | Enter search/filter mode |
@@ -455,7 +455,7 @@ Invalid config values are warned about and clamped or ignored safely. Use `linwa
 | Key | Action |
 |-----|--------|
 | `Enter` / `I` | Open Process Deep-Dive Inspector (cmdline, cwd, VmPeak/VmRSS, I/O rates, open FDs, signals) |
-| `S` | Cycle sort order: CPU↓ → CPU↑ → MEM↓ → MEM↑ → PID↑ → PID↓ |
+| `S` | Cycle sort order: CPU↓ → CPU↑ → MEM↓ → MEM↑ → DISK I/O↓ → DISK I/O↑ → PID↑ → PID↓ |
 | `T` | Toggle process tree hierarchy view (shows parent/child branches) |
 | `↑` | Move selection up in process list |
 | `↓` | Move selection down in process list |

@@ -76,6 +76,8 @@ pub struct ProcessInfo {
     pub name: String,
     pub cpu_pct: f64,
     pub mem_mb: f64,
+    pub io_read_bps: f64,
+    pub io_write_bps: f64,
     pub threads: u32,
     pub state: String,
     pub reason: String,
@@ -102,6 +104,8 @@ pub struct ProcessDetail {
     pub read_bytes: u64,
     pub write_bytes: u64,
     pub cancelled_write_bytes: u64,
+    pub io_read_bps: f64,
+    pub io_write_bps: f64,
     pub open_fds: usize,
     pub cwd: String,
 }
@@ -168,11 +172,19 @@ pub struct GpuInfo {
     pub sensor_source: String,
 }
 
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ProcessPrevStat {
+    pub cpu_time: u64,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+}
+
 pub struct ProcessSummary {
     pub count: usize,
     pub top_cpu: Vec<ProcessInfo>,
     pub top_mem: Vec<ProcessInfo>,
-    pub current_totals: HashMap<u32, u64>,
+    pub top_io: Vec<ProcessInfo>,
+    pub current_totals: HashMap<u32, ProcessPrevStat>,
     pub zombie_count: usize,
 }
 
@@ -336,6 +348,8 @@ pub enum ProcessSort {
     CpuAsc,
     MemDesc,
     MemAsc,
+    IoDesc,
+    IoAsc,
     PidAsc,
     PidDesc,
 }
@@ -346,7 +360,9 @@ impl ProcessSort {
             ProcessSort::CpuDesc => ProcessSort::CpuAsc,
             ProcessSort::CpuAsc => ProcessSort::MemDesc,
             ProcessSort::MemDesc => ProcessSort::MemAsc,
-            ProcessSort::MemAsc => ProcessSort::PidAsc,
+            ProcessSort::MemAsc => ProcessSort::IoDesc,
+            ProcessSort::IoDesc => ProcessSort::IoAsc,
+            ProcessSort::IoAsc => ProcessSort::PidAsc,
             ProcessSort::PidAsc => ProcessSort::PidDesc,
             ProcessSort::PidDesc => ProcessSort::CpuDesc,
         }
@@ -358,6 +374,8 @@ impl ProcessSort {
             ProcessSort::CpuAsc => "CPU \u{2191}",
             ProcessSort::MemDesc => "MEM \u{2193}",
             ProcessSort::MemAsc => "MEM \u{2191}",
+            ProcessSort::IoDesc => "DISK I/O \u{2193}",
+            ProcessSort::IoAsc => "DISK I/O \u{2191}",
             ProcessSort::PidAsc => "PID \u{2191}",
             ProcessSort::PidDesc => "PID \u{2193}",
         }
@@ -427,6 +445,7 @@ pub struct MonitorSnapshot {
     pub process_count: usize,
     pub top_cpu_processes: Vec<ProcessInfo>,
     pub top_mem_processes: Vec<ProcessInfo>,
+    pub top_io_processes: Vec<ProcessInfo>,
     pub alerts: Vec<String>,
     pub root_causes: Vec<RootCause>,
     pub recent_events: Vec<MonitorEvent>,

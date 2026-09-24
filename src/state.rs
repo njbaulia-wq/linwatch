@@ -47,10 +47,11 @@ pub struct AppState {
     pub process_count: usize,
     pub top_cpu_processes: Vec<ProcessInfo>,
     pub top_mem_processes: Vec<ProcessInfo>,
+    pub top_io_processes: Vec<ProcessInfo>,
     pub root_causes: Vec<RootCause>,
     pub failed_units: Vec<SystemdUnitIssue>,
     pub storage_health: Vec<StorageHealth>,
-    pub previous_process_totals: HashMap<u32, u64>,
+    pub previous_process_totals: HashMap<u32, ProcessPrevStat>,
     pub process_sort: ProcessSort,
     pub process_history: HashMap<u32, VecDeque<f64>>,
     pub process_selected: usize,
@@ -159,6 +160,7 @@ impl AppState {
             process_count: 0,
             top_cpu_processes: Vec::new(),
             top_mem_processes: Vec::new(),
+            top_io_processes: Vec::new(),
             root_causes: Vec::new(),
             failed_units: Vec::new(),
             storage_health: Vec::new(),
@@ -270,6 +272,7 @@ impl AppState {
             process_count: self.process_count,
             top_cpu_processes: self.top_cpu_processes.clone(),
             top_mem_processes: self.top_mem_processes.clone(),
+            top_io_processes: self.top_io_processes.clone(),
             alerts: self.alerts.clone(),
             root_causes: self.root_causes.clone(),
             recent_events: self.events.iter().rev().take(20).cloned().collect(),
@@ -378,15 +381,23 @@ impl AppState {
                     v.extend(self.top_mem_processes.iter());
                     v
                 }
+                ProcessSort::IoDesc | ProcessSort::IoAsc => {
+                    let mut v = Vec::with_capacity(self.top_io_processes.len());
+                    v.extend(self.top_io_processes.iter());
+                    v
+                }
                 ProcessSort::PidAsc | ProcessSort::PidDesc => {
                     let mut seen = HashSet::with_capacity(
-                        self.top_cpu_processes.len() + self.top_mem_processes.len(),
+                        self.top_cpu_processes.len()
+                            + self.top_mem_processes.len()
+                            + self.top_io_processes.len(),
                     );
                     let mut v = Vec::with_capacity(seen.capacity());
                     v.extend(
                         self.top_cpu_processes
                             .iter()
                             .chain(self.top_mem_processes.iter())
+                            .chain(self.top_io_processes.iter())
                             .filter(|p| seen.insert(p.pid)),
                     );
                     v
@@ -405,13 +416,17 @@ impl AppState {
             return procs.into_iter().map(|p| (p, String::new())).collect();
         }
 
-        let mut seen =
-            HashSet::with_capacity(self.top_cpu_processes.len() + self.top_mem_processes.len());
+        let mut seen = HashSet::with_capacity(
+            self.top_cpu_processes.len()
+                + self.top_mem_processes.len()
+                + self.top_io_processes.len(),
+        );
         let mut procs: Vec<&ProcessInfo> = Vec::with_capacity(seen.capacity());
         procs.extend(
             self.top_cpu_processes
                 .iter()
                 .chain(self.top_mem_processes.iter())
+                .chain(self.top_io_processes.iter())
                 .filter(|p| seen.insert(p.pid)),
         );
 
@@ -481,6 +496,16 @@ impl AppState {
             ProcessSort::MemAsc => procs.sort_unstable_by(|a, b| {
                 a.mem_mb
                     .partial_cmp(&b.mem_mb)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            ProcessSort::IoDesc => procs.sort_unstable_by(|a, b| {
+                (b.io_read_bps + b.io_write_bps)
+                    .partial_cmp(&(a.io_read_bps + a.io_write_bps))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            ProcessSort::IoAsc => procs.sort_unstable_by(|a, b| {
+                (a.io_read_bps + a.io_write_bps)
+                    .partial_cmp(&(b.io_read_bps + b.io_write_bps))
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
             ProcessSort::PidAsc => procs.sort_unstable_by_key(|p| p.pid),
@@ -597,12 +622,19 @@ impl AppState {
             self.refresh_inspected_process(pid);
         }
 
+        let elapsed_secs = Instant::now()
+            .checked_duration_since(self.last_sample_at)
+            .unwrap_or_default()
+            .as_secs_f64()
+            .max(0.1);
+
         if let Some(mut summary) = self.capture(
             "processes",
             collector::read_process_summary(
                 30,
                 &self.previous_process_totals,
                 cpu_delta.unwrap_or(0),
+                elapsed_secs,
             ),
         ) {
             self.process_count = summary.count;
@@ -622,8 +654,16 @@ impl AppState {
             for p in &mut summary.top_mem {
                 p.is_high_risk = p.cpu_pct > 90.0;
             }
+            for p in &mut summary.top_io {
+                p.is_high_risk = p.cpu_pct > 90.0;
+            }
 
-            self.sort_and_truncate_processes(&mut summary.top_cpu, &mut summary.top_mem, 30);
+            self.sort_and_truncate_processes(
+                &mut summary.top_cpu,
+                &mut summary.top_mem,
+                &mut summary.top_io,
+                30,
+            );
             // Reuse the previous map's allocation instead of dropping it every
             // tick (validated: HashMap::clear retains capacity for reuse).
             self.previous_process_totals.clear();
@@ -638,6 +678,7 @@ impl AppState {
                 .top_cpu_processes
                 .iter()
                 .chain(self.top_mem_processes.iter())
+                .chain(self.top_io_processes.iter())
                 .map(|p| p.pid)
                 .collect();
             self.process_history.retain(|pid, _| active.contains(pid));
@@ -662,6 +703,7 @@ impl AppState {
         &mut self,
         top_cpu: &mut Vec<ProcessInfo>,
         top_mem: &mut Vec<ProcessInfo>,
+        top_io: &mut Vec<ProcessInfo>,
         limit: usize,
     ) {
         top_cpu.sort_unstable_by(|a, b| {
@@ -676,8 +718,15 @@ impl AppState {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         top_mem.truncate(limit);
+        top_io.sort_unstable_by(|a, b| {
+            (b.io_read_bps + b.io_write_bps)
+                .partial_cmp(&(a.io_read_bps + a.io_write_bps))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        top_io.truncate(limit);
         self.top_cpu_processes = std::mem::take(top_cpu);
         self.top_mem_processes = std::mem::take(top_mem);
+        self.top_io_processes = std::mem::take(top_io);
     }
 
     fn capture<T>(&mut self, source: &str, value: Option<T>) -> Option<T> {
@@ -885,14 +934,20 @@ impl AppState {
     }
 
     pub fn open_inspector(&mut self, pid: u32) {
-        let name = self
+        let (name, io_read, io_write) = self
             .top_cpu_processes
             .iter()
             .chain(self.top_mem_processes.iter())
+            .chain(self.top_io_processes.iter())
             .find(|p| p.pid == pid)
-            .map(|p| p.name.as_str())
-            .unwrap_or("process");
-        self.inspect_process_detail = collector::read_process_detail(pid, name);
+            .map(|p| (p.name.as_str(), p.io_read_bps, p.io_write_bps))
+            .unwrap_or(("process", 0.0, 0.0));
+        let mut detail = collector::read_process_detail(pid, name);
+        if let Some(d) = &mut detail {
+            d.io_read_bps = io_read;
+            d.io_write_bps = io_write;
+        }
+        self.inspect_process_detail = detail;
         self.inspect_process_pid = Some(pid);
     }
 
@@ -907,7 +962,17 @@ impl AppState {
             .as_ref()
             .map(|d| d.name.clone())
             .unwrap_or_default();
-        if let Some(detail) = collector::read_process_detail(pid, &name) {
+        if let Some(mut detail) = collector::read_process_detail(pid, &name) {
+            if let Some(p) = self
+                .top_cpu_processes
+                .iter()
+                .chain(self.top_mem_processes.iter())
+                .chain(self.top_io_processes.iter())
+                .find(|p| p.pid == pid)
+            {
+                detail.io_read_bps = p.io_read_bps;
+                detail.io_write_bps = p.io_write_bps;
+            }
             self.inspect_process_detail = Some(detail);
         } else if let Some(detail) = &mut self.inspect_process_detail {
             detail.state = "EXITED".to_string();
@@ -1007,6 +1072,7 @@ impl AppState {
             process_count: 0,
             top_cpu_processes: Vec::new(),
             top_mem_processes: Vec::new(),
+            top_io_processes: Vec::new(),
             root_causes: Vec::new(),
             failed_units: Vec::new(),
             storage_health: Vec::new(),
@@ -1668,6 +1734,8 @@ mod tests {
             reason: "Normal".to_string(),
             is_high_risk: cpu > 90.0,
             is_dev: false,
+            io_read_bps: 0.0,
+            io_write_bps: 0.0,
         }
     }
 
@@ -1790,6 +1858,50 @@ mod tests {
         assert_eq!(result[0].pid, 2);
         assert_eq!(result[1].pid, 1);
         assert_eq!(result[2].pid, 3);
+    }
+
+    #[test]
+    fn filtered_processes_sorts_by_io_desc() {
+        let mut app = bare_state();
+        app.process_sort = ProcessSort::IoDesc;
+        let mut p1 = make_process(1, "a", 10.0, 100.0, 1, "R");
+        p1.io_read_bps = 1_000.0;
+        p1.io_write_bps = 500.0; // 1,500
+        let mut p2 = make_process(2, "b", 10.0, 100.0, 1, "R");
+        p2.io_read_bps = 5_000.0;
+        p2.io_write_bps = 5_000.0; // 10,000
+        let mut p3 = make_process(3, "c", 10.0, 100.0, 1, "S");
+        p3.io_read_bps = 100.0;
+        p3.io_write_bps = 0.0; // 100
+        app.top_io_processes = vec![p1, p2, p3];
+
+        let result = app.filtered_processes();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].pid, 2);
+        assert_eq!(result[1].pid, 1);
+        assert_eq!(result[2].pid, 3);
+    }
+
+    #[test]
+    fn filtered_processes_sorts_by_io_asc() {
+        let mut app = bare_state();
+        app.process_sort = ProcessSort::IoAsc;
+        let mut p1 = make_process(1, "a", 10.0, 100.0, 1, "R");
+        p1.io_read_bps = 1_000.0;
+        p1.io_write_bps = 500.0; // 1,500
+        let mut p2 = make_process(2, "b", 10.0, 100.0, 1, "R");
+        p2.io_read_bps = 5_000.0;
+        p2.io_write_bps = 5_000.0; // 10,000
+        let mut p3 = make_process(3, "c", 10.0, 100.0, 1, "S");
+        p3.io_read_bps = 100.0;
+        p3.io_write_bps = 0.0; // 100
+        app.top_io_processes = vec![p1, p2, p3];
+
+        let result = app.filtered_processes();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].pid, 3);
+        assert_eq!(result[1].pid, 1);
+        assert_eq!(result[2].pid, 2);
     }
 
     #[test]
@@ -1960,6 +2072,12 @@ mod tests {
         assert_eq!(sort, ProcessSort::MemDesc);
         sort.cycle();
         assert_eq!(sort, ProcessSort::MemAsc);
+        sort.cycle();
+        assert_eq!(sort, ProcessSort::IoDesc);
+        assert_eq!(sort.label(), "DISK I/O \u{2193}");
+        sort.cycle();
+        assert_eq!(sort, ProcessSort::IoAsc);
+        assert_eq!(sort.label(), "DISK I/O \u{2191}");
         sort.cycle();
         assert_eq!(sort, ProcessSort::PidAsc);
         sort.cycle();

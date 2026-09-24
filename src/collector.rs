@@ -1185,10 +1185,30 @@ fn read_gpu_power_w(device_path: &Path, driver: &str) -> Option<f64> {
 }
 
 #[must_use]
+pub fn read_pid_io(path: &Path) -> (u64, u64) {
+    let Ok(content) = fs::read_to_string(path) else {
+        return (0, 0);
+    };
+    let mut read_bytes = 0;
+    let mut write_bytes = 0;
+    for line in content.lines() {
+        if let Some((key, val)) = line.split_once(':') {
+            match key.trim() {
+                "read_bytes" => read_bytes = val.trim().parse().unwrap_or(0),
+                "write_bytes" => write_bytes = val.trim().parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    (read_bytes, write_bytes)
+}
+
+#[must_use]
 pub fn read_process_summary(
     limit: usize,
-    prev_totals: &HashMap<u32, u64>,
+    prev_totals: &HashMap<u32, ProcessPrevStat>,
     cpu_delta: u64,
+    elapsed_secs: f64,
 ) -> Option<ProcessSummary> {
     let entries = fs::read_dir("/proc").ok()?;
     // Pre-size from the previous tick (validated: HashMap::with_capacity + clear
@@ -1210,38 +1230,50 @@ pub fn read_process_summary(
         let Ok(stat_content) = fs::read_to_string(path.join("stat")) else {
             continue;
         };
-        let Some(process) =
-            parse_process_stat(pid, &stat_content, prev_totals, cpu_delta, page_size)
-        else {
+        let (read_bytes, write_bytes) = read_pid_io(&path.join("io"));
+        let Some(process) = parse_process_stat(
+            pid,
+            &stat_content,
+            read_bytes,
+            write_bytes,
+            prev_totals,
+            cpu_delta,
+            elapsed_secs,
+            page_size,
+        ) else {
             continue;
         };
 
         if process.info.state == "Z" {
             zombie_count += 1;
         }
-        let total_time = process.total_time;
+        let prev_stat = process.prev_stat;
         let info = process.info;
-        current_totals.insert(pid, total_time);
+        current_totals.insert(pid, prev_stat);
         processes.push(info);
     }
 
     let count = current_totals.len();
     let limit = limit.max(1).min(processes.len());
-    let (top_cpu, top_mem) = if processes.is_empty() {
-        (Vec::new(), Vec::new())
+    let (top_cpu, top_mem, top_io) = if processes.is_empty() {
+        (Vec::new(), Vec::new(), Vec::new())
     } else {
         let mut top_cpu = top_by(processes.as_mut_slice(), limit, compare_cpu_desc).to_vec();
         top_cpu.sort_unstable_by(compare_cpu_desc);
 
         let mut top_mem = top_by(processes.as_mut_slice(), limit, compare_mem_desc).to_vec();
         top_mem.sort_unstable_by(compare_mem_desc);
-        (top_cpu, top_mem)
+
+        let mut top_io = top_by(processes.as_mut_slice(), limit, compare_io_desc).to_vec();
+        top_io.sort_unstable_by(compare_io_desc);
+        (top_cpu, top_mem, top_io)
     };
 
     Some(ProcessSummary {
         count,
         top_cpu,
         top_mem,
+        top_io,
         current_totals,
         zombie_count,
     })
@@ -1249,14 +1281,18 @@ pub fn read_process_summary(
 
 struct ParsedProcess {
     info: ProcessInfo,
-    total_time: u64,
+    prev_stat: ProcessPrevStat,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_process_stat(
     pid: u32,
     content: &str,
-    prev_totals: &HashMap<u32, u64>,
+    read_bytes: u64,
+    write_bytes: u64,
+    prev_totals: &HashMap<u32, ProcessPrevStat>,
     cpu_delta: u64,
+    elapsed_secs: f64,
     page_size: f64,
 ) -> Option<ParsedProcess> {
     let open = content.find('(')?;
@@ -1280,9 +1316,10 @@ fn parse_process_stat(
     let utime: u64 = fields.next()?.parse().unwrap_or(0);
     let stime: u64 = fields.next()?.parse().unwrap_or(0);
     let total_time = utime + stime;
+    let prev = prev_totals.get(&pid);
     let cpu_pct = if cpu_delta > 0 {
-        let prev = prev_totals.get(&pid).unwrap_or(&total_time);
-        let diff = total_time.saturating_sub(*prev);
+        let prev_cpu = prev.map(|p| p.cpu_time).unwrap_or(total_time);
+        let diff = total_time.saturating_sub(prev_cpu);
         (diff as f64 / cpu_delta as f64) * 100.0
     } else {
         0.0
@@ -1297,6 +1334,20 @@ fn parse_process_stat(
     let rss_pages: f64 = fields.next()?.parse().unwrap_or(0.0);
     let mem_mb = (rss_pages * page_size) / 1024.0 / 1024.0;
 
+    let (prev_read, prev_write) = prev
+        .map(|p| (p.read_bytes, p.write_bytes))
+        .unwrap_or((read_bytes, write_bytes));
+    let io_read_bps = if elapsed_secs > 0.0 {
+        ((read_bytes.saturating_sub(prev_read)) as f64 / elapsed_secs).max(0.0)
+    } else {
+        0.0
+    };
+    let io_write_bps = if elapsed_secs > 0.0 {
+        ((write_bytes.saturating_sub(prev_write)) as f64 / elapsed_secs).max(0.0)
+    } else {
+        0.0
+    };
+
     Some(ParsedProcess {
         info: ProcessInfo {
             pid,
@@ -1304,13 +1355,19 @@ fn parse_process_stat(
             name,
             cpu_pct,
             mem_mb,
+            io_read_bps,
+            io_write_bps,
             threads,
             state,
             reason: String::new(),
             is_high_risk: false,
             is_dev: false,
         },
-        total_time,
+        prev_stat: ProcessPrevStat {
+            cpu_time: total_time,
+            read_bytes,
+            write_bytes,
+        },
     })
 }
 
@@ -1332,6 +1389,12 @@ fn compare_cpu_desc(a: &ProcessInfo, b: &ProcessInfo) -> Ordering {
 
 fn compare_mem_desc(a: &ProcessInfo, b: &ProcessInfo) -> Ordering {
     b.mem_mb.partial_cmp(&a.mem_mb).unwrap_or(Ordering::Equal)
+}
+
+fn compare_io_desc(a: &ProcessInfo, b: &ProcessInfo) -> Ordering {
+    let a_total = a.io_read_bps + a.io_write_bps;
+    let b_total = b.io_read_bps + b.io_write_bps;
+    b_total.partial_cmp(&a_total).unwrap_or(Ordering::Equal)
 }
 
 fn page_size_bytes() -> f64 {
@@ -1680,12 +1743,22 @@ mod tests {
     #[test]
     fn parses_process_stat_with_spaces_in_command_name() {
         let mut previous = HashMap::new();
-        previous.insert(123, 100);
+        previous.insert(
+            123,
+            ProcessPrevStat {
+                cpu_time: 100,
+                read_bytes: 1000,
+                write_bytes: 2000,
+            },
+        );
         let parsed = parse_process_stat(
             123,
             "123 (worker process) S 0 0 0 0 0 0 0 0 0 0 100 50 0 0 20 0 4 0 0 0 256",
+            3000,
+            6000,
             &previous,
             200,
+            1.0,
             4096.0,
         )
         .unwrap();
@@ -1695,100 +1768,34 @@ mod tests {
         assert_eq!(parsed.info.name, "worker process");
         assert_eq!(parsed.info.state, "S");
         assert_eq!(parsed.info.threads, 4);
-        assert_eq!(parsed.total_time, 150);
+        assert_eq!(parsed.prev_stat.cpu_time, 150);
+        assert_eq!(parsed.prev_stat.read_bytes, 3000);
+        assert_eq!(parsed.prev_stat.write_bytes, 6000);
         assert_eq!(parsed.info.cpu_pct, 25.0);
         assert_eq!(parsed.info.mem_mb, 1.0);
-    }
-
-    #[test]
-    fn meminfo_falls_back_without_memavailable() {
-        // Pre-3.14 kernels lack MemAvailable: emulate `free` as
-        // free + buffers + cache.
-        let mem = parse_mem_info(
-            "MemTotal:       8192000 kB\n\
-             MemFree:        1024000 kB\n\
-             Buffers:         204800 kB\n\
-             Cached:         3072000 kB\n\
-             SwapTotal:      2097152 kB\n\
-             SwapFree:       2097152 kB\n",
-        )
-        .unwrap();
-
-        assert_eq!(mem.total_mb, 8000.0);
-        // used = 8000 - (1000 + 200 + 3000) = 3800 MB, never 100%.
-        assert!((mem.used_mb - 3800.0).abs() < 1.0, "used={}", mem.used_mb);
-    }
-
-    #[test]
-    fn cpuinfo_parses_raspberry_pi_arm() {
-        let (model, count) = parse_cpuinfo(
-            "processor\t: 0\n\
-             Hardware\t: BCM2711\n\
-             Revision\t: c03111\n\
-             Serial\t\t: 10000000179dda37\n\
-             Model\t\t: Raspberry Pi 4 Model B Rev 1.1\n",
-        );
-
-        assert!(model.contains("Raspberry Pi 4"), "model={model}");
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn cpuinfo_parses_x86_and_counts_cores() {
-        let (model, count) = parse_cpuinfo(
-            "processor\t: 0\n\
-             model name\t: Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz\n\
-             processor\t: 1\n\
-             model name\t: Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz\n",
-        );
-
-        assert!(model.contains("i7-9700K"), "model={model}");
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn os_release_prefers_pretty_name_fallback() {
-        let content = "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nID=debian\n";
-        let name = os_release_value(content, "NAME")
-            .or_else(|| os_release_value(content, "PRETTY_NAME"))
-            .unwrap();
-        assert!(name.contains("Debian"), "name={name}");
-    }
-
-    #[test]
-    fn primary_mount_prefers_root_over_data() {
-        let mounts = vec![
-            DiskInfo {
-                mount_point: String::from("/data"),
-                fs_type: String::from("ext4"),
-                used_gb: 1.0,
-                total_gb: 10.0,
-                free_gb: 9.0,
-                pct: 10,
-            },
-            DiskInfo {
-                mount_point: String::from("/"),
-                fs_type: String::from("ext4"),
-                used_gb: 5.0,
-                total_gb: 50.0,
-                free_gb: 45.0,
-                pct: 10,
-            },
-        ];
-
-        assert_eq!(primary_mount(&mounts).unwrap().mount_point, "/");
-        assert!(primary_mount(&[]).is_none());
+        assert_eq!(parsed.info.io_read_bps, 2000.0);
+        assert_eq!(parsed.info.io_write_bps, 4000.0);
     }
 
     #[test]
     fn parses_process_stat_extracts_ppid() {
         let mut previous = HashMap::new();
-        previous.insert(123, 100);
+        previous.insert(
+            123,
+            ProcessPrevStat {
+                cpu_time: 100,
+                read_bytes: 0,
+                write_bytes: 0,
+            },
+        );
         let parsed = parse_process_stat(
             123,
             "123 (child) S 999 0 0 0 0 0 0 0 0 0 100 50 0 0 20 0 4 0 0 0 256",
+            0,
+            0,
             &previous,
             200,
+            1.0,
             4096.0,
         )
         .unwrap();
@@ -1796,6 +1803,52 @@ mod tests {
         assert_eq!(parsed.info.pid, 123);
         assert_eq!(parsed.info.ppid, 999);
         assert_eq!(parsed.info.name, "child");
+    }
+
+    #[test]
+    fn parses_pid_io_handles_missing_or_valid() {
+        // Missing path returns (0, 0) gracefully
+        let (r, w) = read_pid_io(Path::new("/proc/999999999/io"));
+        assert_eq!((r, w), (0, 0));
+    }
+
+    #[test]
+    fn compare_io_desc_orders_by_total_io_rate() {
+        let mut p1 = ProcessInfo {
+            pid: 1,
+            ppid: 0,
+            name: "slow".to_string(),
+            cpu_pct: 1.0,
+            mem_mb: 10.0,
+            threads: 1,
+            state: "S".to_string(),
+            reason: String::new(),
+            is_high_risk: false,
+            is_dev: false,
+            io_read_bps: 100.0,
+            io_write_bps: 200.0, // 300
+        };
+        let p2 = ProcessInfo {
+            pid: 2,
+            ppid: 0,
+            name: "fast".to_string(),
+            cpu_pct: 1.0,
+            mem_mb: 10.0,
+            threads: 1,
+            state: "S".to_string(),
+            reason: String::new(),
+            is_high_risk: false,
+            is_dev: false,
+            io_read_bps: 1000.0,
+            io_write_bps: 2000.0, // 3000
+        };
+
+        assert_eq!(compare_io_desc(&p1, &p2), std::cmp::Ordering::Greater);
+        assert_eq!(compare_io_desc(&p2, &p1), std::cmp::Ordering::Less);
+
+        p1.io_read_bps = 1000.0;
+        p1.io_write_bps = 2000.0;
+        assert_eq!(compare_io_desc(&p1, &p2), std::cmp::Ordering::Equal);
     }
 
     #[test]

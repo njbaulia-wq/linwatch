@@ -98,17 +98,20 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
     // table never overflows narrow terminals.
     let show_spark = area.width >= 120;
     let show_why = area.width >= 105;
+    let show_io = area.width >= 95;
     let show_thr = area.width >= 90;
     let show_state = area.width >= 75;
 
     let fixed_width = 8
         + 8
         + 9
+        + if show_io { 15 } else { 0 }
         + if show_thr { 5 } else { 0 }
         + if show_state { 11 } else { 0 }
         + if show_why { 17 } else { 0 }
         + if show_spark { 12 } else { 0 };
     let cols_count = 4
+        + usize::from(show_io)
         + usize::from(show_thr)
         + usize::from(show_state)
         + usize::from(show_why)
@@ -173,6 +176,35 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
                     Style::default().fg(t.overlay1),
                 )),
             ];
+            if show_io {
+                let total_io = p.io_read_bps + p.io_write_bps;
+                let io_style = if total_io > 50.0 * 1024.0 * 1024.0 {
+                    Style::default()
+                        .fg(t.accent_red)
+                        .add_modifier(Modifier::BOLD)
+                } else if total_io > 5.0 * 1024.0 * 1024.0 {
+                    Style::default()
+                        .fg(t.accent_yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if total_io > 10.0 * 1024.0 {
+                    Style::default().fg(t.accent_blue)
+                } else if total_io > 0.0 {
+                    Style::default().fg(t.subtext0)
+                } else {
+                    Style::default().fg(t.overlay0)
+                };
+
+                let io_str = if total_io <= f64::EPSILON {
+                    String::from("       -       ")
+                } else {
+                    format!(
+                        "R:{} W:{}",
+                        format_compact_rate(p.io_read_bps),
+                        format_compact_rate(p.io_write_bps)
+                    )
+                };
+                cells.push(Cell::from(Span::styled(io_str, io_style)));
+            }
             if show_thr {
                 cells.push(Cell::from(Span::styled(
                     format!("{:>4}", p.threads),
@@ -232,6 +264,9 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             Constraint::Length(8),
             Constraint::Length(9),
         ];
+        if show_io {
+            widths.push(Constraint::Length(15));
+        }
         if show_thr {
             widths.push(Constraint::Length(5));
         }
@@ -250,6 +285,9 @@ pub fn processes_tab(frame: &mut Frame, area: Rect, app: &AppState, table_state:
             Cell::from(header_col("CPU%")),
             Cell::from(header_col("MEM")),
         ];
+        if show_io {
+            header_cells.push(Cell::from(header_col("DISK R/W")));
+        }
         if show_thr {
             header_cells.push(Cell::from(header_col("THR")));
         }
@@ -401,6 +439,15 @@ fn render_process_inspector(
 
     // 4. I/O & Descriptors
     lines.push(Line::from(styled("─".repeat(max_w.min(76)), t.surface1)));
+    let io_rate_info = if detail.io_read_bps + detail.io_write_bps > 0.0 {
+        format!(
+            " ({} rd, {} wr)",
+            format_rate(detail.io_read_bps),
+            format_rate(detail.io_write_bps)
+        )
+    } else {
+        String::new()
+    };
     lines.push(Line::from(vec![
         dim(" Open FDs: "),
         styled(format!("{}", detail.open_fds), t.accent_teal),
@@ -408,6 +455,7 @@ fn render_process_inspector(
         styled(format_bytes(detail.read_bytes as f64), t.text),
         dim("  │ Write: "),
         styled(format_bytes(detail.write_bytes as f64), t.text),
+        styled(io_rate_info, t.accent_blue),
     ]));
 
     // 5. Action message or status
@@ -464,6 +512,8 @@ mod tests {
             reason: "Normal".to_string(),
             is_high_risk: false,
             is_dev: false,
+            io_read_bps: 1024.0 * 1024.0 * 2.5,
+            io_write_bps: 1024.0 * 512.0,
         }];
 
         let mut table_state = TableState::default();
@@ -477,6 +527,7 @@ mod tests {
         // Verify buffer has content and shows part of the process name
         let content_str: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(content_str.contains("long-running-worker"));
+        assert!(content_str.contains("DISK R/W"));
     }
 
     #[test]
@@ -497,6 +548,8 @@ mod tests {
                 reason: "Normal".to_string(),
                 is_high_risk: false,
                 is_dev: false,
+                io_read_bps: 0.0,
+                io_write_bps: 0.0,
             },
             ProcessInfo {
                 pid: 101,
@@ -509,6 +562,8 @@ mod tests {
                 reason: "Normal".to_string(),
                 is_high_risk: false,
                 is_dev: false,
+                io_read_bps: 0.0,
+                io_write_bps: 0.0,
             },
         ];
 
@@ -551,6 +606,8 @@ mod tests {
             cancelled_write_bytes: 0,
             open_fds: 64,
             cwd: "/var/lib/db".into(),
+            io_read_bps: 1024.0 * 1024.0 * 5.0,
+            io_write_bps: 1024.0 * 1024.0 * 2.0,
         });
 
         let mut table_state = TableState::default();
@@ -567,5 +624,52 @@ mod tests {
         assert!(content_str.contains("4242"));
         assert!(content_str.contains("SIGTERM"));
         assert!(content_str.contains("SIGSTOP"));
+        assert!(content_str.contains("rd"));
+        assert!(content_str.contains("wr"));
+    }
+
+    #[test]
+    fn processes_tab_responsive_io_column() {
+        let mut app = AppState::new(AppConfig::default());
+        app.top_cpu_processes = vec![ProcessInfo {
+            pid: 999,
+            ppid: 1,
+            name: "test-proc".to_string(),
+            cpu_pct: 1.0,
+            mem_mb: 10.0,
+            threads: 1,
+            state: "S".to_string(),
+            reason: "Normal".to_string(),
+            is_high_risk: false,
+            is_dev: false,
+            io_read_bps: 1024.0 * 100.0,
+            io_write_bps: 1024.0 * 50.0,
+        }];
+
+        // At width 100 (>= 95): DISK R/W column should be visible
+        let backend_wide = TestBackend::new(100, 30);
+        let mut term_wide = Terminal::new(backend_wide).unwrap();
+        let mut table_state = TableState::default();
+        term_wide
+            .draw(|frame| {
+                processes_tab(frame, frame.size(), &app, &mut table_state);
+            })
+            .unwrap();
+        let buf_wide = term_wide.backend().buffer();
+        let wide_str: String = buf_wide.content.iter().map(|c| c.symbol()).collect();
+        assert!(wide_str.contains("DISK R/W"));
+
+        // At width 80 (< 95): DISK R/W column should be hidden
+        let backend_narrow = TestBackend::new(80, 30);
+        let mut term_narrow = Terminal::new(backend_narrow).unwrap();
+        let mut table_state = TableState::default();
+        term_narrow
+            .draw(|frame| {
+                processes_tab(frame, frame.size(), &app, &mut table_state);
+            })
+            .unwrap();
+        let buf_narrow = term_narrow.backend().buffer();
+        let narrow_str: String = buf_narrow.content.iter().map(|c| c.symbol()).collect();
+        assert!(!narrow_str.contains("DISK R/W"));
     }
 }
