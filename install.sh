@@ -19,9 +19,16 @@ case "$ARCH" in
 esac
 
 # Get latest release tag
-echo "Fetching latest release..."
-TAG=$(curl -sSfL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+TAG="${TAG:-${VERSION:-}}"
 if [ -z "$TAG" ]; then
+  echo "Fetching latest release..."
+  TAG=$(basename "$(curl -sIL -o /dev/null -w "%{url_effective}" "https://github.com/$REPO/releases/latest")" 2>/dev/null || true)
+  if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
+    TAG=$(curl -sSfL -H "User-Agent: linwatch-installer" "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4 || true)
+  fi
+fi
+
+if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
   echo "Failed to fetch latest release tag"
   exit 1
 fi
