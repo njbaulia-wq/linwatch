@@ -479,6 +479,7 @@ pub struct RaplPower {
     pub pkg_w: Option<f64>,
     pub core_w: Option<f64>,
     pub dram_w: Option<f64>,
+    pub psys_w: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]

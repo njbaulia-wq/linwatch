@@ -113,13 +113,19 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
         };
 
         let info = &app.battery_info;
+        let psys_w = app.rapl_power.psys_w;
+        let cpu_w = app
+            .rapl_power
+            .pkg_w
+            .or_else(|| app.hw_sensors.iter().find_map(|s| s.power_w));
+
         let bat_str = match (
             info.power_w,
             info.time_to_empty_mins,
             info.time_to_full_mins,
             info.status.as_str(),
         ) {
-            (Some(w), Some(mins), _, "Discharging") => {
+            (Some(w), Some(mins), _, "Discharging") if w > 0.05 => {
                 let h = mins / 60;
                 let m = mins % 60;
                 if h > 0 {
@@ -128,7 +134,7 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
                     format!(" · Bat {bat}% · {:.1}W ({m}m)", w)
                 }
             }
-            (Some(w), _, Some(mins), "Charging") => {
+            (Some(w), _, Some(mins), "Charging") if w > 0.05 => {
                 let h = mins / 60;
                 let m = mins % 60;
                 if h > 0 {
@@ -137,21 +143,34 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
                     format!(" · Bat {bat}% · +{:.1}W ({m}m chg)", w)
                 }
             }
-            (Some(w), _, _, "Discharging") => format!(" · Bat {bat}% · {:.1}W", w),
-            (Some(w), _, _, "Charging") => format!(" · Bat {bat}% · +{:.1}W", w),
-            (Some(w), _, _, _) => format!(" · Bat {bat}% · {:.1}W", w),
-            (_, _, _, "Full") => format!(" · Bat {bat}% · AC"),
-            _ if info.ac_online == Some(true) => format!(" · Bat {bat}% · AC"),
-            _ => format!(" · Bat {bat}%"),
+            (Some(w), _, _, "Discharging") if w > 0.05 => format!(" · Bat {bat}% · {:.1}W", w),
+            (Some(w), _, _, "Charging") if w > 0.05 => format!(" · Bat {bat}% · +{:.1}W", w),
+            _ => {
+                if let Some(p) = psys_w.filter(|&w| w > 0.1) {
+                    format!(" · Bat {bat}% · {:.1}W (Sys AC)", p)
+                } else if let Some(c) = cpu_w.filter(|&w| w > 0.1) {
+                    format!(" · Bat {bat}% · {:.1}W (AC)", c)
+                } else if info.ac_online == Some(true) || info.status == "Full" {
+                    format!(" · Bat {bat}% · AC Online")
+                } else {
+                    format!(" · Bat {bat}%")
+                }
+            }
         };
 
         right_l1_spans.push(Span::styled(bat_str, Style::default().fg(bat_color)));
     } else {
+        let psys_w = app.rapl_power.psys_w;
         let cpu_w = app
             .rapl_power
             .pkg_w
             .or_else(|| app.hw_sensors.iter().find_map(|s| s.power_w));
-        if let Some(w) = cpu_w {
+        if let Some(p) = psys_w.filter(|&w| w > 0.1) {
+            right_l1_spans.push(Span::styled(
+                format!(" · Sys: {:.1}W (AC)", p),
+                Style::default().fg(t.accent_teal),
+            ));
+        } else if let Some(w) = cpu_w.filter(|&w| w > 0.1) {
             right_l1_spans.push(Span::styled(
                 format!(" · Pwr: {:.1}W (AC)", w),
                 Style::default().fg(t.accent_teal),

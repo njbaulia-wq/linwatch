@@ -153,7 +153,14 @@ fn render_vitals(frame: &mut Frame, area: Rect, app: &AppState, narrow: bool) {
             .or_else(|| app.hw_sensors.iter().find_map(|s| s.power_w));
         if let Some(pkg) = cpu_watts {
             arch_spans.push(dim("  │  Pkg: "));
-            arch_spans.push(styled(format!("{pkg:.1}W"), t.accent_yellow));
+            if let Some(psys) = app.rapl_power.psys_w.filter(|&w| w > 0.1) {
+                arch_spans.push(styled(
+                    format!("{pkg:.1}W (Sys {psys:.1}W)"),
+                    t.accent_yellow,
+                ));
+            } else {
+                arch_spans.push(styled(format!("{pkg:.1}W"), t.accent_yellow));
+            }
         } else if let Some(sensor) = app
             .hw_sensors
             .iter()

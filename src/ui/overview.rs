@@ -784,12 +784,10 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
         let bat_pct_str = b_info.pct.map(|p| format!("{p}% ")).unwrap_or_default();
         let mut bat_desc = format!("{}{}", bat_pct_str, b_info.status);
         if let Some(w) = b_info.power_w {
-            if b_info.status == "Discharging" {
+            if b_info.status == "Discharging" && w > 0.05 {
                 bat_desc.push_str(&format!(" ({:.1}W)", w));
-            } else if b_info.status == "Charging" {
+            } else if b_info.status == "Charging" && w > 0.05 {
                 bat_desc.push_str(&format!(" (+{:.1}W)", w));
-            } else {
-                bat_desc.push_str(&format!(" ({:.1}W)", w));
             }
         }
         if let Some(mins) = b_info.time_to_empty_mins {
@@ -809,6 +807,10 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
         power_parts.push(String::from("AC Online (Plugged)"));
     }
 
+    if let Some(psys) = app.rapl_power.psys_w.filter(|&w| w > 0.1) {
+        power_parts.push(format!("Total Sys: {:.1}W", psys));
+    }
+
     let cpu_watts = app
         .rapl_power
         .pkg_w
@@ -819,6 +821,10 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
     let gpu_power = app.gpus.iter().find_map(|g| g.power_w);
     if let Some(gpu_w) = gpu_power {
         power_parts.push(format!("GPU: {:.1}W", gpu_w));
+    }
+
+    if cpu_watts.is_none() && crate::collector::check_rapl_permission_needed() {
+        power_parts.push(String::from("CPU/Sys: sudo required for RAPL"));
     }
 
     if power_parts.is_empty() {

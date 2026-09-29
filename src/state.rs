@@ -307,11 +307,21 @@ impl AppState {
             .rapl_power
             .pkg_w
             .or_else(|| self.hw_sensors.iter().find_map(|s| s.power_w));
-        let total_w = match (self.battery_info.power_w, cpu_w, total_gpu_w) {
-            (Some(b), _, _) if self.battery_info.status == "Discharging" => Some(b),
-            (_, Some(c), Some(g)) => Some(c + g),
-            (_, Some(c), None) => Some(c),
-            _ => self.battery_info.power_w,
+        let total_w = match (
+            self.battery_info.power_w,
+            self.rapl_power.psys_w,
+            cpu_w,
+            total_gpu_w,
+        ) {
+            // When discharging on battery, the battery discharge rate is the total power of the whole laptop
+            (Some(b), _, _, _) if self.battery_info.status == "Discharging" && b > 0.1 => Some(b),
+            // On Intel laptops (ThinkPad X13), psys measures the total platform power
+            (_, Some(p), _, _) if p > 0.1 => Some(p),
+            // Otherwise, sum of CPU and GPU
+            (_, _, Some(c), Some(g)) => Some(c + g),
+            (_, _, Some(c), None) => Some(c),
+            (Some(b), _, _, _) if b > 0.1 => Some(b),
+            _ => None,
         };
         SystemPowerSummary {
             battery: self.battery_info.clone(),
@@ -2612,6 +2622,12 @@ mod tests {
         // total_w = 15.0 (CPU) + 250.0 (GPU) = 265.0W
         assert_eq!(summary2.total_w, Some(265.0));
         assert_eq!(summary2.gpu_w, Some(250.0));
+
+        // Intel laptop on AC: psys platform domain measures entire system power
+        app.gpus.clear();
+        app.rapl_power.psys_w = Some(18.5);
+        let summary3 = app.power_summary();
+        assert_eq!(summary3.total_w, Some(18.5));
     }
 
     #[test]

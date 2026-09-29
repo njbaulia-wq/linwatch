@@ -817,28 +817,31 @@ pub fn read_battery_info_from(base: &Path) -> BatteryInfo {
                 }
             }
 
-            // Power (Watts): first check power_now (in microwatts)
+            // Power (Watts): first check power_now (in microwatts, can be signed)
             let mut bat_power_w = None;
-            if let Some(p_now) = read_sys_u64_path(path.join("power_now")).or_else(|| {
+            if let Some(p_raw) = read_sys_i64_path(path.join("power_now")).or_else(|| {
                 uevent_value(&uevent_content, "POWER_SUPPLY_POWER_NOW").and_then(|v| v.parse().ok())
             }) {
-                if p_now > 0 {
-                    bat_power_w = Some(p_now as f64 / 1_000_000.0);
+                let p_abs = p_raw.unsigned_abs();
+                if p_abs > 0 {
+                    bat_power_w = Some(p_abs as f64 / 1_000_000.0);
                 }
             }
-            // Fallback: current_now (µA) * voltage_now (µV) / 10^12 = Watts
+            // Fallback: current_now (µA, can be signed) * voltage_now (µV) / 10^12 = Watts
             if bat_power_w.is_none() {
-                let cur = read_sys_u64_path(path.join("current_now")).or_else(|| {
+                let cur = read_sys_i64_path(path.join("current_now")).or_else(|| {
                     uevent_value(&uevent_content, "POWER_SUPPLY_CURRENT_NOW")
                         .and_then(|v| v.parse().ok())
                 });
-                let vol = read_sys_u64_path(path.join("voltage_now")).or_else(|| {
+                let vol = read_sys_i64_path(path.join("voltage_now")).or_else(|| {
                     uevent_value(&uevent_content, "POWER_SUPPLY_VOLTAGE_NOW")
                         .and_then(|v| v.parse().ok())
                 });
                 if let (Some(c), Some(v)) = (cur, vol) {
-                    if c > 0 && v > 0 {
-                        bat_power_w = Some((c as f64 * v as f64) / 1e12);
+                    let c_abs = c.unsigned_abs();
+                    let v_abs = v.unsigned_abs();
+                    if c_abs > 0 && v_abs > 0 {
+                        bat_power_w = Some((c_abs as f64 * v_abs as f64) / 1e12);
                     }
                 }
             }
@@ -1049,6 +1052,8 @@ pub fn calculate_rapl_watts(
     let mut has_core = false;
     let mut dram_w = 0.0;
     let mut has_dram = false;
+    let mut psys_w = 0.0;
+    let mut has_psys = false;
     let mut first_domain_w = None;
 
     for (name, &(curr_uj, max_range)) in curr {
@@ -1066,7 +1071,10 @@ pub fn calculate_rapl_watts(
                     first_domain_w = Some(watts);
                 }
                 let name_lower = name.to_lowercase();
-                if name_lower.contains("package") || name_lower.contains("pkg") {
+                if name_lower.contains("psys") || name_lower.contains("platform") {
+                    psys_w += watts;
+                    has_psys = true;
+                } else if name_lower.contains("package") || name_lower.contains("pkg") {
                     pkg_w += watts;
                     has_pkg = true;
                 } else if name_lower.contains("core") {
@@ -1091,6 +1099,7 @@ pub fn calculate_rapl_watts(
         pkg_w: if has_pkg { Some(pkg_w) } else { None },
         core_w: if has_core { Some(core_w) } else { None },
         dram_w: if has_dram { Some(dram_w) } else { None },
+        psys_w: if has_psys { Some(psys_w) } else { None },
     }
 }
 
@@ -1405,6 +1414,24 @@ fn read_trimmed_path(path: impl AsRef<Path>) -> Option<String> {
 
 fn read_sys_u64_path(path: impl AsRef<Path>) -> Option<u64> {
     read_trimmed_path(path)?.parse().ok()
+}
+
+fn read_sys_i64_path(path: impl AsRef<Path>) -> Option<i64> {
+    read_trimmed_path(path)?.parse().ok()
+}
+
+#[must_use]
+pub fn check_rapl_permission_needed() -> bool {
+    for candidate in [
+        Path::new("/sys/class/powercap/intel-rapl:0/energy_uj"),
+        Path::new("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj"),
+        Path::new("/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj"),
+    ] {
+        if candidate.exists() && fs::read_to_string(candidate).is_err() {
+            return true;
+        }
+    }
+    false
 }
 
 fn uevent_value(content: &str, key: &str) -> Option<String> {
@@ -2425,16 +2452,48 @@ mod tests {
         let mut prev = HashMap::new();
         prev.insert("package-0".to_string(), (100_000_000, 1_000_000_000));
         prev.insert("dram".to_string(), (50_000_000, 1_000_000_000));
+        prev.insert("psys".to_string(), (200_000_000, 1_000_000_000));
 
         let mut curr = HashMap::new();
         // delta = 25_000_000 uJ in 1.0s -> 25.0 W
         curr.insert("package-0".to_string(), (125_000_000, 1_000_000_000));
         // delta = 5_000_000 uJ in 1.0s -> 5.0 W
         curr.insert("dram".to_string(), (55_000_000, 1_000_000_000));
+        // delta = 35_000_000 uJ in 1.0s -> 35.0 W
+        curr.insert("psys".to_string(), (235_000_000, 1_000_000_000));
 
         let power = calculate_rapl_watts(&prev, &curr, 1.0);
         assert_eq!(power.pkg_w, Some(25.0));
         assert_eq!(power.dram_w, Some(5.0));
+        assert_eq!(power.psys_w, Some(35.0));
         assert_eq!(power.core_w, None);
+    }
+
+    #[test]
+    fn parses_signed_negative_battery_values() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!("linwatch_bat_signed_{unique_id}"));
+        let bat0 = test_dir.join("BAT0");
+        let _ = fs::create_dir_all(&bat0);
+
+        fs::write(bat0.join("type"), "Battery\n").unwrap();
+        fs::write(bat0.join("capacity"), "80\n").unwrap();
+        fs::write(bat0.join("status"), "Discharging\n").unwrap();
+        // Negative current e.g. ThinkPad discharge reporting -1_200_000 uA
+        fs::write(bat0.join("current_now"), "-1200000\n").unwrap();
+        fs::write(bat0.join("voltage_now"), "12000000\n").unwrap();
+        fs::write(bat0.join("charge_now"), "4000000\n").unwrap();
+        fs::write(bat0.join("charge_full"), "5000000\n").unwrap();
+
+        let info = read_battery_info_from(&test_dir);
+        assert!(info.present);
+        assert_eq!(info.pct, Some(80));
+        assert_eq!(info.status, "Discharging");
+        assert!((info.power_w.unwrap() - 14.4).abs() < 0.01);
+
+        let _ = fs::remove_dir_all(&test_dir);
     }
 }
