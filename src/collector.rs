@@ -1422,13 +1422,29 @@ fn read_sys_i64_path(path: impl AsRef<Path>) -> Option<i64> {
 
 #[must_use]
 pub fn check_rapl_permission_needed() -> bool {
-    for candidate in [
-        Path::new("/sys/class/powercap/intel-rapl:0/energy_uj"),
-        Path::new("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj"),
-        Path::new("/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj"),
+    for base in [
+        Path::new("/sys/class/powercap"),
+        Path::new("/sys/devices/virtual/powercap"),
     ] {
-        if candidate.exists() && fs::read_to_string(candidate).is_err() {
-            return true;
+        if let Ok(entries) = fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.contains("rapl") || name_str.contains("energy") {
+                    let energy_file = entry.path().join("energy_uj");
+                    if energy_file.exists() && fs::read_to_string(&energy_file).is_err() {
+                        return true;
+                    }
+                    if let Ok(subs) = fs::read_dir(entry.path()) {
+                        for sub in subs.flatten() {
+                            let sub_energy = sub.path().join("energy_uj");
+                            if sub_energy.exists() && fs::read_to_string(&sub_energy).is_err() {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     false

@@ -106,11 +106,11 @@ Download from the [Releases page](https://github.com/njbaulia-wq/linwatch/releas
 
 ```bash
 # x86_64
-curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.12/linwatch-v0.1.12-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.18/linwatch-v0.1.18-x86_64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 
 # aarch64
-curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.12/linwatch-v0.1.12-aarch64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.18/linwatch-v0.1.18-aarch64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 ```
 
@@ -196,6 +196,22 @@ linwatch --check-config       # Validate config and exit
 linwatch --help               # Show help
 linwatch --version            # Show version
 ```
+
+### Privileges: Unprivileged vs `sudo linwatch`
+
+`linwatch` is designed to run safely as a normal, unprivileged user for standard monitoring. Running with `sudo` unlocks advanced kernel hardware counters:
+
+| Feature | Without `sudo` (`linwatch`) | With `sudo` (`sudo linwatch`) |
+|---------|-----------------------------|-------------------------------|
+| **Battery Discharge Power** | Full real-time Watts & battery health | Full real-time Watts & battery health |
+| **AC Power & Intel RAPL** | Fallback to AC Online status | Full CPU Package & Platform System (`psys`) Watts |
+| **Process Inspection** | Own processes only | All system & daemon processes |
+| **Network Socket Inodes** | Own user listening ports | All system & root listening port names |
+| **Process Signaling (Kill/Stop)** | User-owned PIDs | Any non-kernel PID |
+
+> [!NOTE]
+> **Why is `sudo` needed for Intel RAPL?**
+> Since Linux kernel 5.10+, security mitigation for **CVE-2020-8694 (PLATYPUS)** restricts energy counter access (`/sys/class/powercap/intel-rapl*/energy_uj`) to `0400` (root-only). When running on AC power, use `sudo linwatch` to view Intel CPU Package and motherboard platform-wide (`psys`) power draw.
 
 ### Quick keys while running
 
@@ -534,7 +550,8 @@ Lazy reads: battery every 5 ticks, thermal every 3 ticks, GPU every 4 ticks, sys
 | Open ports | Listening TCP/UDP ports, IPv4 + IPv6 | `/proc/net/tcp`, `/proc/net/udp`, `/proc/net/tcp6`, `/proc/net/udp6` | Every 8 ticks |
 | GPU | Vendor, model, temp, usage, power, freq, VRAM, RC6 | `/sys/class/drm` + `/sys/class/hwmon`, optional local PCI label cache | Every 4 ticks |
 | Processes | Top CPU/MEM, count, per-process sparkline | `/proc/<pid>/stat` | Delta CPU, instant MEM |
-| Battery | Capacity %, charging status | `/sys/class/power_supply` | Every 5 ticks |
+| Battery | Capacity %, status, discharge/charge power (W), health % | `/sys/class/power_supply` | Every 5 ticks |
+| Power / RAPL | CPU Package, Core, DRAM, Platform System (`psys`) Watts | `/sys/class/powercap/intel-rapl*` (root-only on AC) | Per-tick delta |
 | Thermal | Temperature in °C | `/sys/class/thermal` (CPU zones preferred, battery zones skipped) | Every 3 ticks |
 | Platform | OS, kernel, hostname, CPU model, environment | `/etc/os-release` (fallback `/usr/lib/os-release`, `/run/host/os-release`), `/proc/sys/kernel/*`, `/proc/cpuinfo` (x86 + ARM layouts) | Once at startup |
 | Local status | Failed units (best-effort) | `systemctl` (skipped when systemd absent) | systemd+ports every 8 ticks |
