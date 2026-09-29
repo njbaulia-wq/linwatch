@@ -106,12 +106,49 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
     if let Some(bat) = app.battery_pct {
         let bat_color = if bat <= app.battery_alert {
             t.accent_red
+        } else if bat <= 35 {
+            t.accent_yellow
         } else {
             t.accent_green
         };
+
+        let info = &app.battery_info;
+        let bat_str = match (
+            info.power_w,
+            info.time_to_empty_mins,
+            info.time_to_full_mins,
+            info.status.as_str(),
+        ) {
+            (Some(w), Some(mins), _, "Discharging") => {
+                let h = mins / 60;
+                let m = mins % 60;
+                if h > 0 {
+                    format!(" · Bat {bat}% · {:.1}W ({h}h {m:02}m)", w)
+                } else {
+                    format!(" · Bat {bat}% · {:.1}W ({m}m)", w)
+                }
+            }
+            (Some(w), _, Some(mins), "Charging") => {
+                let h = mins / 60;
+                let m = mins % 60;
+                if h > 0 {
+                    format!(" · Bat {bat}% · +{:.1}W ({h}h {m:02}m chg)", w)
+                } else {
+                    format!(" · Bat {bat}% · +{:.1}W ({m}m chg)", w)
+                }
+            }
+            (Some(w), _, _, "Discharging") => format!(" · Bat {bat}% · {:.1}W", w),
+            (Some(w), _, _, "Charging") => format!(" · Bat {bat}% · +{:.1}W", w),
+            (_, _, _, "Full") => format!(" · Bat {bat}% · AC"),
+            _ if info.ac_online == Some(true) => format!(" · Bat {bat}% · AC"),
+            _ => format!(" · Bat {bat}%"),
+        };
+
+        right_l1_spans.push(Span::styled(bat_str, Style::default().fg(bat_color)));
+    } else if let Some(true) = app.battery_info.ac_online {
         right_l1_spans.push(Span::styled(
-            format!(" · Bat {bat}%"),
-            Style::default().fg(bat_color),
+            " · AC Online",
+            Style::default().fg(t.accent_teal),
         ));
     }
 

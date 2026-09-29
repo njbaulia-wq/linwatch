@@ -672,26 +672,307 @@ pub fn read_load_average() -> Option<[String; 3]> {
     Some(values)
 }
 
-pub fn read_battery() -> (Option<u16>, String) {
-    let base = Path::new("/sys/class/power_supply");
+#[must_use]
+pub fn read_battery_info() -> BatteryInfo {
+    read_battery_info_from(Path::new("/sys/class/power_supply"))
+}
+
+pub fn read_battery_info_from(base: &Path) -> BatteryInfo {
     let Ok(entries) = fs::read_dir(base) else {
-        return (None, String::from("N/A"));
+        return BatteryInfo {
+            present: false,
+            pct: None,
+            status: String::from("N/A"),
+            ..Default::default()
+        };
     };
+
+    let mut ac_online = None;
+    let mut total_capacity_sum = 0u64;
+    let mut battery_count = 0usize;
+    let mut primary_status = String::from("N/A");
+    let mut total_power_w = 0.0f64;
+    let mut has_power = false;
+    let mut total_energy_wh = 0.0f64;
+    let mut has_energy = false;
+    let mut total_energy_full_wh = 0.0f64;
+    let mut has_energy_full = false;
+    let mut total_energy_design_wh = 0.0f64;
+    let mut has_energy_design = false;
+    let mut model = String::new();
+
     for entry in entries.flatten() {
         let path = entry.path();
-        let supply_type = fs::read_to_string(path.join("type")).unwrap_or_default();
-        if supply_type.trim() == "Battery" {
-            let capacity = fs::read_to_string(path.join("capacity"))
-                .ok()
-                .and_then(|value| value.trim().parse::<u16>().ok())
-                .map(|v| v.min(100));
-            let status = fs::read_to_string(path.join("status"))
-                .map(|value| value.trim().to_string())
-                .unwrap_or_else(|_| String::from("Unknown"));
-            return (capacity, status);
+        let supply_type = read_trimmed_path(path.join("type")).unwrap_or_default();
+        let entry_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+
+        // Detect AC Adapter status
+        if supply_type.eq_ignore_ascii_case("Mains")
+            || supply_type.eq_ignore_ascii_case("AC")
+            || entry_name.starts_with("AC")
+            || entry_name.starts_with("ADP")
+        {
+            if let Some(online_str) = read_trimmed_path(path.join("online")) {
+                if online_str == "1" {
+                    ac_online = Some(true);
+                } else if online_str == "0" && ac_online.is_none() {
+                    ac_online = Some(false);
+                }
+            }
+        }
+
+        // Detect Battery
+        if supply_type.eq_ignore_ascii_case("Battery") || entry_name.starts_with("BAT") {
+            battery_count += 1;
+
+            if let Some(cap) = read_sys_u64_path(path.join("capacity")) {
+                total_capacity_sum += cap.min(100);
+            }
+
+            let status =
+                read_trimmed_path(path.join("status")).unwrap_or_else(|| String::from("Unknown"));
+            if primary_status == "N/A"
+                || primary_status == "Full"
+                || primary_status == "Unknown"
+                || status == "Discharging"
+                || status == "Charging"
+            {
+                primary_status = status;
+            }
+
+            if model.is_empty() {
+                if let Some(m) = read_trimmed_path(path.join("model_name")) {
+                    model = m;
+                } else if let Some(manuf) = read_trimmed_path(path.join("manufacturer")) {
+                    model = manuf;
+                }
+            }
+
+            // Power (Watts): first check power_now (in microwatts)
+            let mut bat_power_w = None;
+            if let Some(p_now) = read_sys_u64_path(path.join("power_now")) {
+                if p_now > 0 {
+                    bat_power_w = Some(p_now as f64 / 1_000_000.0);
+                }
+            }
+            // Fallback: current_now (µA) * voltage_now (µV) / 10^12 = Watts
+            if bat_power_w.is_none() {
+                if let (Some(cur), Some(vol)) = (
+                    read_sys_u64_path(path.join("current_now")),
+                    read_sys_u64_path(path.join("voltage_now")),
+                ) {
+                    if cur > 0 && vol > 0 {
+                        bat_power_w = Some((cur as f64 * vol as f64) / 1e12);
+                    }
+                }
+            }
+            if let Some(w) = bat_power_w {
+                total_power_w += w;
+                has_power = true;
+            }
+
+            // Voltage for charge to energy conversion if needed
+            let voltage_v = read_sys_u64_path(path.join("voltage_now"))
+                .or_else(|| read_sys_u64_path(path.join("voltage_min_design")))
+                .map(|v| v as f64 / 1_000_000.0);
+
+            // Energy now (Wh)
+            let mut bat_energy_wh = None;
+            if let Some(e_now) = read_sys_u64_path(path.join("energy_now")) {
+                bat_energy_wh = Some(e_now as f64 / 1_000_000.0);
+            } else if let Some(c_now) = read_sys_u64_path(path.join("charge_now")) {
+                if let Some(vol) = voltage_v {
+                    bat_energy_wh = Some((c_now as f64 / 1_000_000.0) * vol);
+                }
+            }
+            if let Some(wh) = bat_energy_wh {
+                total_energy_wh += wh;
+                has_energy = true;
+            }
+
+            // Energy full (Wh)
+            let mut bat_full_wh = None;
+            if let Some(e_full) = read_sys_u64_path(path.join("energy_full")) {
+                bat_full_wh = Some(e_full as f64 / 1_000_000.0);
+            } else if let Some(c_full) = read_sys_u64_path(path.join("charge_full")) {
+                if let Some(vol) = voltage_v {
+                    bat_full_wh = Some((c_full as f64 / 1_000_000.0) * vol);
+                }
+            }
+            if let Some(wh) = bat_full_wh {
+                total_energy_full_wh += wh;
+                has_energy_full = true;
+            }
+
+            // Energy design (Wh)
+            let mut bat_design_wh = None;
+            if let Some(e_des) = read_sys_u64_path(path.join("energy_full_design")) {
+                bat_design_wh = Some(e_des as f64 / 1_000_000.0);
+            } else if let Some(c_des) = read_sys_u64_path(path.join("charge_full_design")) {
+                if let Some(vol) = voltage_v {
+                    bat_design_wh = Some((c_des as f64 / 1_000_000.0) * vol);
+                }
+            }
+            if let Some(wh) = bat_design_wh {
+                total_energy_design_wh += wh;
+                has_energy_design = true;
+            }
         }
     }
-    (None, String::from("No battery"))
+
+    if battery_count == 0 {
+        return BatteryInfo {
+            present: false,
+            pct: None,
+            status: if ac_online == Some(true) {
+                String::from("AC Online")
+            } else {
+                String::from("No battery")
+            },
+            ac_online,
+            ..Default::default()
+        };
+    }
+
+    let avg_pct = (total_capacity_sum / battery_count as u64).min(100) as u16;
+    let health_pct = if has_energy_full && has_energy_design && total_energy_design_wh > 0.1 {
+        Some(
+            ((total_energy_full_wh / total_energy_design_wh) * 100.0)
+                .clamp(0.0, 100.0)
+                .round() as u16,
+        )
+    } else {
+        None
+    };
+
+    BatteryInfo {
+        present: true,
+        pct: Some(avg_pct),
+        status: primary_status,
+        power_w: if has_power { Some(total_power_w) } else { None },
+        energy_wh: if has_energy {
+            Some(total_energy_wh)
+        } else {
+            None
+        },
+        energy_full_wh: if has_energy_full {
+            Some(total_energy_full_wh)
+        } else {
+            None
+        },
+        energy_design_wh: if has_energy_design {
+            Some(total_energy_design_wh)
+        } else {
+            None
+        },
+        health_pct,
+        time_to_empty_mins: None,
+        time_to_full_mins: None,
+        ac_online,
+        model,
+    }
+}
+
+#[must_use]
+pub fn read_rapl_energy() -> Option<RaplCounters> {
+    read_rapl_energy_from(Path::new("/sys/class/powercap/intel-rapl"))
+}
+
+pub fn read_rapl_energy_from(base: &Path) -> Option<RaplCounters> {
+    let entries = fs::read_dir(base).ok()?;
+    let mut domains = HashMap::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name_str) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name_str.starts_with("intel-rapl:") {
+            collect_rapl_domain(&path, &mut domains);
+        }
+    }
+
+    if domains.is_empty() {
+        None
+    } else {
+        Some(domains)
+    }
+}
+
+fn collect_rapl_domain(dir: &Path, out: &mut RaplCounters) {
+    if let (Some(name), Some(energy_uj)) = (
+        read_trimmed_path(dir.join("name")),
+        read_sys_u64_path(dir.join("energy_uj")),
+    ) {
+        let max_range = read_sys_u64_path(dir.join("max_energy_range_uj")).unwrap_or(u64::MAX);
+        out.insert(name, (energy_uj, max_range));
+    }
+
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(sub_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if sub_name.starts_with("intel-rapl:") {
+                collect_rapl_domain(&path, out);
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn calculate_rapl_watts(
+    prev: &RaplCounters,
+    curr: &RaplCounters,
+    elapsed_secs: f64,
+) -> RaplPower {
+    if elapsed_secs <= 0.01 {
+        return RaplPower::default();
+    }
+
+    let mut pkg_w = 0.0;
+    let mut has_pkg = false;
+    let mut core_w = 0.0;
+    let mut has_core = false;
+    let mut dram_w = 0.0;
+    let mut has_dram = false;
+
+    for (name, &(curr_uj, max_range)) in curr {
+        if let Some(&(prev_uj, _)) = prev.get(name) {
+            let delta_uj = if curr_uj >= prev_uj {
+                curr_uj - prev_uj
+            } else if max_range > prev_uj {
+                (max_range - prev_uj).saturating_add(curr_uj)
+            } else {
+                curr_uj
+            };
+            let watts = (delta_uj as f64) / (elapsed_secs * 1_000_000.0);
+            if (0.0..=1000.0).contains(&watts) {
+                let name_lower = name.to_lowercase();
+                if name_lower.contains("package") {
+                    pkg_w += watts;
+                    has_pkg = true;
+                } else if name_lower.contains("core") {
+                    core_w += watts;
+                    has_core = true;
+                } else if name_lower.contains("dram") {
+                    dram_w += watts;
+                    has_dram = true;
+                }
+            }
+        }
+    }
+
+    RaplPower {
+        pkg_w: if has_pkg { Some(pkg_w) } else { None },
+        core_w: if has_core { Some(core_w) } else { None },
+        dram_w: if has_dram { Some(dram_w) } else { None },
+    }
 }
 
 #[must_use]
@@ -1592,6 +1873,7 @@ pub fn read_hw_sensors() -> Vec<HwSensor> {
                             temp_c,
                             fan_rpm: None,
                             crit_c,
+                            power_w: None,
                         });
                     } else if file_name.starts_with("fan") && file_name.ends_with("_input") {
                         let prefix = file_name.trim_end_matches("_input");
@@ -1606,6 +1888,27 @@ pub fn read_hw_sensors() -> Vec<HwSensor> {
                             temp_c: None,
                             fan_rpm,
                             crit_c: None,
+                            power_w: None,
+                        });
+                    } else if file_name.starts_with("power")
+                        && (file_name.ends_with("_input") || file_name.ends_with("_average"))
+                    {
+                        let prefix = file_name
+                            .trim_end_matches("_input")
+                            .trim_end_matches("_average");
+                        let label = read_trimmed_path(path.join(format!("{prefix}_label")))
+                            .unwrap_or_else(|| format!("{name} {prefix}"));
+                        let power_micro: Option<f64> =
+                            read_trimmed_path(sub.path()).and_then(|s| s.parse().ok());
+                        let power_w = power_micro.map(|u| u / 1_000_000.0);
+
+                        sensors.push(HwSensor {
+                            name: name.clone(),
+                            label,
+                            temp_c: None,
+                            fan_rpm: None,
+                            crit_c: None,
+                            power_w,
                         });
                     }
                 }
@@ -1630,6 +1933,7 @@ pub fn read_hw_sensors() -> Vec<HwSensor> {
                             temp_c,
                             fan_rpm: None,
                             crit_c: None,
+                            power_w: None,
                         });
                     }
                 }
@@ -1925,5 +2229,93 @@ mod tests {
     #[test]
     fn read_process_detail_returns_none_for_missing_pid() {
         assert!(read_process_detail(u32::MAX, "missing_proc").is_none());
+    }
+
+    #[test]
+    fn parses_battery_info_from_mock_sysfs() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!("linwatch_bat_test_{unique_id}"));
+        let bat0 = test_dir.join("BAT0");
+        let ac = test_dir.join("AC");
+        let _ = fs::create_dir_all(&bat0);
+        let _ = fs::create_dir_all(&ac);
+
+        fs::write(ac.join("type"), "Mains\n").unwrap();
+        fs::write(ac.join("online"), "1\n").unwrap();
+
+        fs::write(bat0.join("type"), "Battery\n").unwrap();
+        fs::write(bat0.join("capacity"), "85\n").unwrap();
+        fs::write(bat0.join("status"), "Discharging\n").unwrap();
+        fs::write(bat0.join("power_now"), "15000000\n").unwrap(); // 15W
+        fs::write(bat0.join("energy_now"), "45000000\n").unwrap(); // 45Wh
+        fs::write(bat0.join("energy_full"), "50000000\n").unwrap(); // 50Wh
+        fs::write(bat0.join("energy_full_design"), "55000000\n").unwrap(); // 55Wh
+        fs::write(bat0.join("model_name"), "ThinkBattery\n").unwrap();
+
+        let info = read_battery_info_from(&test_dir);
+        assert!(info.present);
+        assert_eq!(info.pct, Some(85));
+        assert_eq!(info.status, "Discharging");
+        assert_eq!(info.power_w, Some(15.0));
+        assert_eq!(info.energy_wh, Some(45.0));
+        assert_eq!(info.energy_full_wh, Some(50.0));
+        assert_eq!(info.energy_design_wh, Some(55.0));
+        assert_eq!(info.health_pct, Some(91));
+        assert_eq!(info.ac_online, Some(true));
+        assert_eq!(info.model, "ThinkBattery");
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn parses_battery_info_current_voltage_fallback() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!("linwatch_bat_fallback_{unique_id}"));
+        let bat0 = test_dir.join("BAT0");
+        let _ = fs::create_dir_all(&bat0);
+
+        fs::write(bat0.join("type"), "Battery\n").unwrap();
+        fs::write(bat0.join("capacity"), "60\n").unwrap();
+        fs::write(bat0.join("status"), "Charging\n").unwrap();
+        // 1.5A = 1_500_000 uA, 12V = 12_000_000 uV -> 18W
+        fs::write(bat0.join("current_now"), "1500000\n").unwrap();
+        fs::write(bat0.join("voltage_now"), "12000000\n").unwrap();
+        // 3Ah = 3_000_000 uAh * 12V -> 36Wh
+        fs::write(bat0.join("charge_now"), "3000000\n").unwrap();
+        fs::write(bat0.join("charge_full"), "5000000\n").unwrap();
+
+        let info = read_battery_info_from(&test_dir);
+        assert!(info.present);
+        assert_eq!(info.pct, Some(60));
+        assert_eq!(info.status, "Charging");
+        assert!((info.power_w.unwrap() - 18.0).abs() < 0.01);
+        assert!((info.energy_wh.unwrap() - 36.0).abs() < 0.01);
+        assert!((info.energy_full_wh.unwrap() - 60.0).abs() < 0.01);
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn calculate_rapl_watts_normal_and_rollover() {
+        let mut prev = HashMap::new();
+        prev.insert("package-0".to_string(), (100_000_000, 1_000_000_000));
+        prev.insert("dram".to_string(), (50_000_000, 1_000_000_000));
+
+        let mut curr = HashMap::new();
+        // delta = 25_000_000 uJ in 1.0s -> 25.0 W
+        curr.insert("package-0".to_string(), (125_000_000, 1_000_000_000));
+        // delta = 5_000_000 uJ in 1.0s -> 5.0 W
+        curr.insert("dram".to_string(), (55_000_000, 1_000_000_000));
+
+        let power = calculate_rapl_watts(&prev, &curr, 1.0);
+        assert_eq!(power.pkg_w, Some(25.0));
+        assert_eq!(power.dram_w, Some(5.0));
+        assert_eq!(power.core_w, None);
     }
 }

@@ -228,6 +228,7 @@ The default tab showing a high-level system health dashboard.
 | Element | Description |
 |---------|-------------|
 | **Operator Focus** | Health score, root cause, data quality, thermal, GPU, and network summary |
+| **Power & Battery** | Real-time system wattage (W), battery health, runtime estimation (time-to-empty/full), CPU RAPL & GPU power |
 | **KPI Cards** | Four high-priority cards: CPU, GPU, Memory, and Root Disk |
 | **History Charts** | 120-sample line charts for CPU and Memory |
 | **Pressure Gauges** | Compact resource pressure meters with severity labels |
@@ -239,7 +240,7 @@ Detailed per-core CPU monitoring.
 
 | Element | Description |
 |---------|-------------|
-| **CPU Info** | Model name, architecture |
+| **CPU Info** | Model name, architecture, hardware sensors, and RAPL package wattage |
 | **Load Average** | 1, 5, and 15-minute load averages |
 | **Per-core Bars** | Usage percentage for each logical core, responsive height |
 | **Total Usage** | Aggregated CPU usage percentage |

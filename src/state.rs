@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 use crate::collector;
 use crate::types::*;
 
+pub type RaplSample = (RaplCounters, Instant);
+
 pub struct AppState {
     pub system: SystemInfo,
     pub env: EnvKind,
@@ -26,6 +28,10 @@ pub struct AppState {
     pub load_avg: [String; 3],
     pub battery_pct: Option<u16>,
     pub battery_status: String,
+    pub battery_info: BatteryInfo,
+    pub rapl_power: RaplPower,
+    pub previous_rapl: Option<RaplSample>,
+    pub battery_power_ema: Option<f64>,
     pub net_down_bps: f64,
     pub net_up_bps: f64,
     pub net_down_history: VecDeque<(f64, f64)>,
@@ -139,6 +145,10 @@ impl AppState {
             ],
             battery_pct: None,
             battery_status: String::from("N/A"),
+            battery_info: BatteryInfo::default(),
+            rapl_power: RaplPower::default(),
+            previous_rapl: None,
+            battery_power_ema: None,
             net_down_bps: 0.0,
             net_up_bps: 0.0,
             net_down_history: VecDeque::with_capacity(HISTORY_LIMIT),
@@ -280,6 +290,34 @@ impl AppState {
             environment: self.env.label().to_string(),
             security_mode: self.system.selinux_mode.clone(),
             psi: self.psi,
+            power: self.power_summary(),
+        }
+    }
+
+    pub fn power_summary(&self) -> SystemPowerSummary {
+        let total_gpu_w: Option<f64> = {
+            let sum: f64 = self.gpus.iter().filter_map(|g| g.power_w).sum();
+            if sum > 0.0 {
+                Some(sum)
+            } else {
+                None
+            }
+        };
+        let total_w = match (
+            self.battery_info.power_w,
+            self.rapl_power.pkg_w,
+            total_gpu_w,
+        ) {
+            (Some(b), _, _) if self.battery_info.status == "Discharging" => Some(b),
+            (_, Some(c), Some(g)) => Some(c + g),
+            (_, Some(c), None) => Some(c),
+            _ => self.battery_info.power_w,
+        };
+        SystemPowerSummary {
+            battery: self.battery_info.clone(),
+            rapl: self.rapl_power.clone(),
+            gpu_w: total_gpu_w,
+            total_w,
         }
     }
 
@@ -571,9 +609,53 @@ impl AppState {
         }
 
         if self.tick_count == 1 || self.tick_count.is_multiple_of(BATTERY_READ_EVERY) {
-            let (battery_pct, battery_status) = collector::read_battery();
-            self.battery_pct = battery_pct;
-            self.battery_status = battery_status;
+            let mut info = collector::read_battery_info();
+
+            // Update Exponential Moving Average (EMA) for battery power draw to stabilize time remaining
+            if let Some(w) = info.power_w {
+                let alpha = 0.2; // ~5 sample smoothing window
+                let new_ema = match self.battery_power_ema {
+                    Some(prev) => alpha * w + (1.0 - alpha) * prev,
+                    None => w,
+                };
+                self.battery_power_ema = Some(new_ema);
+            }
+
+            // Calculate smoothed Time to Empty or Time to Full
+            let smoothed_w = self.battery_power_ema.or(info.power_w).unwrap_or(0.0);
+            if info.status == "Discharging" && smoothed_w > 0.5 {
+                if let Some(wh) = info.energy_wh {
+                    let mins = ((wh / smoothed_w) * 60.0).clamp(1.0, 1440.0).round() as u32;
+                    info.time_to_empty_mins = Some(mins);
+                }
+            } else if info.status == "Charging" && info.power_w.unwrap_or(0.0) > 0.5 {
+                let power = info.power_w.unwrap_or(1.0);
+                if let (Some(full), Some(curr)) = (info.energy_full_wh, info.energy_wh) {
+                    if full > curr {
+                        let mins =
+                            (((full - curr) / power) * 60.0).clamp(1.0, 1440.0).round() as u32;
+                        info.time_to_full_mins = Some(mins);
+                    }
+                }
+            }
+
+            self.battery_pct = info.pct;
+            self.battery_status = info.status.clone();
+            self.battery_info = info;
+        }
+
+        // Sample Intel/AMD RAPL CPU & platform energy
+        if let Some(curr_rapl) = collector::read_rapl_energy() {
+            let now = Instant::now();
+            if let Some((prev_rapl, prev_time)) = &self.previous_rapl {
+                let elapsed = now
+                    .checked_duration_since(*prev_time)
+                    .unwrap_or_default()
+                    .as_secs_f64()
+                    .max(0.1);
+                self.rapl_power = collector::calculate_rapl_watts(prev_rapl, &curr_rapl, elapsed);
+            }
+            self.previous_rapl = Some((curr_rapl, now));
         }
         if self.tick_count == 1 || self.tick_count.is_multiple_of(THERMAL_READ_EVERY) {
             self.temp_c = collector::read_temperature();
@@ -1051,6 +1133,10 @@ impl AppState {
             load_avg: [String::new(), String::new(), String::new()],
             battery_pct: None,
             battery_status: String::new(),
+            battery_info: BatteryInfo::default(),
+            rapl_power: RaplPower::default(),
+            previous_rapl: None,
+            battery_power_ema: None,
             net_down_bps: 0.0,
             net_up_bps: 0.0,
             net_down_history: std::collections::VecDeque::new(),
@@ -2482,5 +2568,73 @@ mod tests {
         for (_, val) in &app.cpu_history {
             assert!(val.is_finite());
         }
+    }
+
+    #[test]
+    fn test_power_summary_computation() {
+        let mut app = bare_state();
+        // Laptop case: battery discharging at 20W
+        app.battery_info.present = true;
+        app.battery_info.power_w = Some(20.0);
+        app.battery_info.status = "Discharging".to_string();
+        app.rapl_power.pkg_w = Some(15.0);
+        app.rapl_power.dram_w = Some(2.5);
+
+        let summary = app.power_summary();
+        assert_eq!(summary.total_w, Some(20.0));
+        assert_eq!(summary.battery.power_w, Some(20.0));
+        assert_eq!(summary.rapl.pkg_w, Some(15.0));
+        assert_eq!(summary.rapl.dram_w, Some(2.5));
+        assert_eq!(summary.gpu_w, None);
+
+        // Desktop / AC case: no battery power reading, RAPL + GPU
+        app.battery_info.power_w = None;
+        app.gpus.push(crate::types::GpuInfo {
+            card: "card0".to_string(),
+            vendor: "nvidia".to_string(),
+            model: "RTX 4090".to_string(),
+            driver: "nvidia".to_string(),
+            kind: "Discrete".to_string(),
+            pci_slot: "0000:01:00.0".to_string(),
+            usage_pct: Some(75.0),
+            memory_used_mb: Some(4000.0),
+            memory_total_mb: Some(24000.0),
+            temp_c: Some(60.0),
+            power_w: Some(250.0),
+            frequency_mhz: Some(2500),
+            max_frequency_mhz: Some(2520),
+            rc6_residency_ms: None,
+            power_state: "D0".to_string(),
+            sensor_source: "nvidia-smi".to_string(),
+        });
+
+        let summary2 = app.power_summary();
+        // total_w = 15.0 (CPU) + 250.0 (GPU) = 265.0W
+        assert_eq!(summary2.total_w, Some(265.0));
+        assert_eq!(summary2.gpu_w, Some(250.0));
+    }
+
+    #[test]
+    fn test_battery_time_to_empty_and_full_logic() {
+        // Discharging test: 45Wh remaining, 15W draw -> 3 hours = 180 mins
+        let remaining_wh: f64 = 45.0;
+        let smoothed_w: f64 = 15.0;
+        let time_to_empty =
+            (((remaining_wh / smoothed_w) * 60.0).clamp(1.0, 1440.0)).round() as u32;
+        assert_eq!(time_to_empty, 180);
+
+        // Charging test: 50Wh full, 30Wh current (20Wh needed), 20W charging -> 1 hour = 60 mins
+        let full_wh: f64 = 50.0;
+        let curr_wh: f64 = 30.0;
+        let charging_w: f64 = 20.0;
+        let time_to_full =
+            ((((full_wh - curr_wh) / charging_w) * 60.0).clamp(1.0, 1440.0)).round() as u32;
+        assert_eq!(time_to_full, 60);
+
+        // EMA smoothing test: initial EMA 20W, new reading 10W -> 0.2 * 10 + 0.8 * 20 = 2 + 16 = 18W
+        let prev_ema: f64 = 20.0;
+        let new_reading: f64 = 10.0;
+        let smoothed: f64 = 0.2 * new_reading + 0.8 * prev_ema;
+        assert!((smoothed - 18.0).abs() < 1e-6);
     }
 }

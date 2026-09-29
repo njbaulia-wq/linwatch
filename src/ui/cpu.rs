@@ -147,7 +147,10 @@ fn render_vitals(frame: &mut Frame, area: Rect, app: &AppState, narrow: bool) {
             dim(" logical  │  Env: "),
             styled(app.env.label(), t.accent_teal),
         ];
-        if let Some(sensor) = app
+        if let Some(pkg) = app.rapl_power.pkg_w {
+            arch_spans.push(dim("  │  Pkg: "));
+            arch_spans.push(styled(format!("{pkg:.1}W"), t.accent_yellow));
+        } else if let Some(sensor) = app
             .hw_sensors
             .iter()
             .find(|s| s.fan_rpm.is_some() || s.temp_c.is_some())
@@ -536,6 +539,7 @@ mod tests {
             temp_c: None,
             fan_rpm: Some(2500),
             crit_c: None,
+            power_w: None,
         }];
 
         let backend = TestBackend::new(120, 35);

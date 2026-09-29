@@ -844,6 +844,64 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
         ),
     ]));
 
+    // Power & Battery line
+    let mut power_parts = Vec::new();
+    let b_info = &app.battery_info;
+    if b_info.present {
+        if let Some(pct) = b_info.pct {
+            let mut bat_desc = format!("{pct}% {}", b_info.status);
+            if let Some(w) = b_info.power_w {
+                if b_info.status == "Discharging" {
+                    bat_desc.push_str(&format!(" ({:.1}W)", w));
+                } else if b_info.status == "Charging" {
+                    bat_desc.push_str(&format!(" (+{:.1}W)", w));
+                } else {
+                    bat_desc.push_str(&format!(" ({:.1}W)", w));
+                }
+            }
+            if let Some(mins) = b_info.time_to_empty_mins {
+                let h = mins / 60;
+                let m = mins % 60;
+                bat_desc.push_str(&format!(" · {h}h {m:02}m left"));
+            } else if let Some(mins) = b_info.time_to_full_mins {
+                let h = mins / 60;
+                let m = mins % 60;
+                bat_desc.push_str(&format!(" · {h}h {m:02}m to full"));
+            }
+            if let Some(health) = b_info.health_pct {
+                bat_desc.push_str(&format!(" · Health {health}%"));
+            }
+            power_parts.push(bat_desc);
+        }
+    } else if let Some(true) = b_info.ac_online {
+        power_parts.push(String::from("AC Online (Desktop/Plugged)"));
+    }
+
+    if let Some(pkg) = app.rapl_power.pkg_w {
+        power_parts.push(format!("CPU Pkg: {:.1}W", pkg));
+    }
+    let gpu_power = app.gpus.iter().find_map(|g| g.power_w);
+    if let Some(gpu_w) = gpu_power {
+        power_parts.push(format!("GPU: {:.1}W", gpu_w));
+    }
+
+    if !power_parts.is_empty() {
+        let power_str = power_parts.join(" · ");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<width$}: ", "Power & Battery", width = label_w),
+                Style::default().fg(t.overlay1),
+            ),
+            Span::styled(
+                truncate(
+                    &power_str,
+                    inner.width.saturating_sub(label_w as u16 + 2) as usize,
+                ),
+                Style::default().fg(t.accent_teal),
+            ),
+        ]));
+    }
+
     // 5. Kernel PSI Telemetry (Pressure Stall Information)
     if let Some(psi) = &app.psi {
         let cpu_stall = psi.cpu.some.avg10;
@@ -1124,6 +1182,7 @@ mod tests {
                 temp_c: None,
                 fan_rpm: Some(2400),
                 crit_c: None,
+                power_w: None,
             },
             crate::types::HwSensor {
                 name: "coretemp".into(),
@@ -1131,6 +1190,7 @@ mod tests {
                 temp_c: Some(52.0),
                 fan_rpm: None,
                 crit_c: Some(100.0),
+                power_w: None,
             },
         ];
 

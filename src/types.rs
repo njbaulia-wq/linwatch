@@ -14,6 +14,7 @@ pub const GPU_READ_EVERY: u64 = 4;
 pub type NetworkCounters = HashMap<String, (u64, u64)>;
 pub type DiskIoCounters = HashMap<String, (u64, u64)>;
 pub type GpuRc6Counters = HashMap<String, u64>;
+pub type RaplCounters = HashMap<String, (u64, u64)>;
 
 #[derive(Clone, Copy)]
 pub struct CpuSample {
@@ -138,6 +139,7 @@ pub struct HwSensor {
     pub temp_c: Option<f64>,
     pub fan_rpm: Option<u64>,
     pub crit_c: Option<f64>,
+    pub power_w: Option<f64>,
 }
 
 pub struct NetInterface {
@@ -453,6 +455,38 @@ pub struct MonitorSnapshot {
     pub environment: String,
     pub security_mode: String,
     pub psi: Option<SystemPsi>,
+    pub power: SystemPowerSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct BatteryInfo {
+    pub present: bool,
+    pub pct: Option<u16>,
+    pub status: String,
+    pub power_w: Option<f64>,
+    pub energy_wh: Option<f64>,
+    pub energy_full_wh: Option<f64>,
+    pub energy_design_wh: Option<f64>,
+    pub health_pct: Option<u16>,
+    pub time_to_empty_mins: Option<u32>,
+    pub time_to_full_mins: Option<u32>,
+    pub ac_online: Option<bool>,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct RaplPower {
+    pub pkg_w: Option<f64>,
+    pub core_w: Option<f64>,
+    pub dram_w: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct SystemPowerSummary {
+    pub battery: BatteryInfo,
+    pub rapl: RaplPower,
+    pub gpu_w: Option<f64>,
+    pub total_w: Option<f64>,
 }
 
 /// Severity level used for color + symbol cues (accessibility-friendly).
