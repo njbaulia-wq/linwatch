@@ -106,11 +106,11 @@ Download from the [Releases page](https://github.com/njbaulia-wq/linwatch/releas
 
 ```bash
 # x86_64
-curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.19/linwatch-v0.1.19-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.20/linwatch-v0.1.20-x86_64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 
 # aarch64
-curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.19/linwatch-v0.1.19-aarch64-unknown-linux-gnu.tar.gz | tar -xz
+curl -sSfL https://github.com/njbaulia-wq/linwatch/releases/download/v0.1.20/linwatch-v0.1.20-aarch64-unknown-linux-gnu.tar.gz | tar -xz
 sudo install linwatch /usr/local/bin/
 ```
 
