@@ -303,11 +303,11 @@ impl AppState {
                 None
             }
         };
-        let total_w = match (
-            self.battery_info.power_w,
-            self.rapl_power.pkg_w,
-            total_gpu_w,
-        ) {
+        let cpu_w = self
+            .rapl_power
+            .pkg_w
+            .or_else(|| self.hw_sensors.iter().find_map(|s| s.power_w));
+        let total_w = match (self.battery_info.power_w, cpu_w, total_gpu_w) {
             (Some(b), _, _) if self.battery_info.status == "Discharging" => Some(b),
             (_, Some(c), Some(g)) => Some(c + g),
             (_, Some(c), None) => Some(c),

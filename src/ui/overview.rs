@@ -118,10 +118,15 @@ fn render_cpu_card(frame: &mut Frame, area: Rect, app: &AppState) {
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(inner);
 
-    let sub = if let Some(temp) = app.temp_c {
-        format!("{}c · {:.0}\u{b0}C", app.system.cpu_count, temp)
-    } else {
-        format!("{} cores", app.system.cpu_count)
+    let cpu_watts = app
+        .rapl_power
+        .pkg_w
+        .or_else(|| app.hw_sensors.iter().find_map(|s| s.power_w));
+    let sub = match (app.temp_c, cpu_watts) {
+        (Some(temp), Some(w)) => format!("{:.0}\u{b0}C · {:.1}W", temp, w),
+        (Some(temp), None) => format!("{}c · {:.0}\u{b0}C", app.system.cpu_count, temp),
+        (None, Some(w)) => format!("{}c · {:.1}W", app.system.cpu_count, w),
+        (None, None) => format!("{} cores", app.system.cpu_count),
     };
 
     let line1 = Line::from(vec![
@@ -772,7 +777,77 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
         ),
     ]));
 
-    // 3. CPU Hardware, Temperature & Fans
+    // 3. Power & Battery (Always rendered and prominent!)
+    let mut power_parts = Vec::new();
+    let b_info = &app.battery_info;
+    if b_info.present {
+        let bat_pct_str = b_info.pct.map(|p| format!("{p}% ")).unwrap_or_default();
+        let mut bat_desc = format!("{}{}", bat_pct_str, b_info.status);
+        if let Some(w) = b_info.power_w {
+            if b_info.status == "Discharging" {
+                bat_desc.push_str(&format!(" ({:.1}W)", w));
+            } else if b_info.status == "Charging" {
+                bat_desc.push_str(&format!(" (+{:.1}W)", w));
+            } else {
+                bat_desc.push_str(&format!(" ({:.1}W)", w));
+            }
+        }
+        if let Some(mins) = b_info.time_to_empty_mins {
+            let h = mins / 60;
+            let m = mins % 60;
+            bat_desc.push_str(&format!(" · {h}h {m:02}m left"));
+        } else if let Some(mins) = b_info.time_to_full_mins {
+            let h = mins / 60;
+            let m = mins % 60;
+            bat_desc.push_str(&format!(" · {h}h {m:02}m to full"));
+        }
+        if let Some(health) = b_info.health_pct {
+            bat_desc.push_str(&format!(" · Health {health}%"));
+        }
+        power_parts.push(bat_desc);
+    } else if let Some(true) = b_info.ac_online {
+        power_parts.push(String::from("AC Online (Plugged)"));
+    }
+
+    let cpu_watts = app
+        .rapl_power
+        .pkg_w
+        .or_else(|| app.hw_sensors.iter().find_map(|s| s.power_w));
+    if let Some(pkg) = cpu_watts {
+        power_parts.push(format!("CPU: {:.1}W", pkg));
+    }
+    let gpu_power = app.gpus.iter().find_map(|g| g.power_w);
+    if let Some(gpu_w) = gpu_power {
+        power_parts.push(format!("GPU: {:.1}W", gpu_w));
+    }
+
+    if power_parts.is_empty() {
+        if app.env == crate::types::EnvKind::Container
+            || app.env == crate::types::EnvKind::VirtualMachine
+            || app.env == crate::types::EnvKind::Wsl
+        {
+            power_parts.push(String::from("AC Power (Virtual Host)"));
+        } else {
+            power_parts.push(String::from("AC Online (No Battery Detected)"));
+        }
+    }
+
+    let power_str = power_parts.join(" · ");
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<width$}: ", "Power & Battery", width = label_w),
+            Style::default().fg(t.overlay1),
+        ),
+        Span::styled(
+            truncate(
+                &power_str,
+                inner.width.saturating_sub(label_w as u16 + 2) as usize,
+            ),
+            Style::default().fg(t.accent_teal),
+        ),
+    ]));
+
+    // 4. CPU Hardware, Temperature & Fans
     let cpu_model = if app.system.cpu_model.is_empty() {
         "Processor"
     } else {
@@ -811,7 +886,7 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
         ),
     ]));
 
-    // 4. Memory Breakdown (RAM used / total, available, swap)
+    // 5. Memory Breakdown (RAM used / total, available, swap)
     let avail_gb = (app.mem_total - app.mem_used).max(0.0) / 1024.0;
     let swap_str = if app.swap_total > 0.0 {
         format!(
@@ -843,64 +918,6 @@ fn render_system_vitals_panel(frame: &mut Frame, area: Rect, app: &AppState) {
             Style::default().fg(t.text),
         ),
     ]));
-
-    // Power & Battery line
-    let mut power_parts = Vec::new();
-    let b_info = &app.battery_info;
-    if b_info.present {
-        if let Some(pct) = b_info.pct {
-            let mut bat_desc = format!("{pct}% {}", b_info.status);
-            if let Some(w) = b_info.power_w {
-                if b_info.status == "Discharging" {
-                    bat_desc.push_str(&format!(" ({:.1}W)", w));
-                } else if b_info.status == "Charging" {
-                    bat_desc.push_str(&format!(" (+{:.1}W)", w));
-                } else {
-                    bat_desc.push_str(&format!(" ({:.1}W)", w));
-                }
-            }
-            if let Some(mins) = b_info.time_to_empty_mins {
-                let h = mins / 60;
-                let m = mins % 60;
-                bat_desc.push_str(&format!(" · {h}h {m:02}m left"));
-            } else if let Some(mins) = b_info.time_to_full_mins {
-                let h = mins / 60;
-                let m = mins % 60;
-                bat_desc.push_str(&format!(" · {h}h {m:02}m to full"));
-            }
-            if let Some(health) = b_info.health_pct {
-                bat_desc.push_str(&format!(" · Health {health}%"));
-            }
-            power_parts.push(bat_desc);
-        }
-    } else if let Some(true) = b_info.ac_online {
-        power_parts.push(String::from("AC Online (Desktop/Plugged)"));
-    }
-
-    if let Some(pkg) = app.rapl_power.pkg_w {
-        power_parts.push(format!("CPU Pkg: {:.1}W", pkg));
-    }
-    let gpu_power = app.gpus.iter().find_map(|g| g.power_w);
-    if let Some(gpu_w) = gpu_power {
-        power_parts.push(format!("GPU: {:.1}W", gpu_w));
-    }
-
-    if !power_parts.is_empty() {
-        let power_str = power_parts.join(" · ");
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:<width$}: ", "Power & Battery", width = label_w),
-                Style::default().fg(t.overlay1),
-            ),
-            Span::styled(
-                truncate(
-                    &power_str,
-                    inner.width.saturating_sub(label_w as u16 + 2) as usize,
-                ),
-                Style::default().fg(t.accent_teal),
-            ),
-        ]));
-    }
 
     // 5. Kernel PSI Telemetry (Pressure Stall Information)
     if let Some(psi) = &app.psi {

@@ -139,17 +139,31 @@ pub fn header(frame: &mut Frame, area: Rect, app: &crate::state::AppState) {
             }
             (Some(w), _, _, "Discharging") => format!(" · Bat {bat}% · {:.1}W", w),
             (Some(w), _, _, "Charging") => format!(" · Bat {bat}% · +{:.1}W", w),
+            (Some(w), _, _, _) => format!(" · Bat {bat}% · {:.1}W", w),
             (_, _, _, "Full") => format!(" · Bat {bat}% · AC"),
             _ if info.ac_online == Some(true) => format!(" · Bat {bat}% · AC"),
             _ => format!(" · Bat {bat}%"),
         };
 
         right_l1_spans.push(Span::styled(bat_str, Style::default().fg(bat_color)));
-    } else if let Some(true) = app.battery_info.ac_online {
-        right_l1_spans.push(Span::styled(
-            " · AC Online",
-            Style::default().fg(t.accent_teal),
-        ));
+    } else {
+        let cpu_w = app
+            .rapl_power
+            .pkg_w
+            .or_else(|| app.hw_sensors.iter().find_map(|s| s.power_w));
+        if let Some(w) = cpu_w {
+            right_l1_spans.push(Span::styled(
+                format!(" · Pwr: {:.1}W (AC)", w),
+                Style::default().fg(t.accent_teal),
+            ));
+        } else if let Some(true) = app.battery_info.ac_online {
+            right_l1_spans.push(Span::styled(
+                " · AC Online",
+                Style::default().fg(t.accent_teal),
+            ));
+        } else {
+            right_l1_spans.push(Span::styled(" · AC Power", Style::default().fg(t.overlay1)));
+        }
     }
 
     // Line 2 Right: Load averages & CPU Temperature
